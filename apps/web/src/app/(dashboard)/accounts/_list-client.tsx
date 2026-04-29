@@ -3,8 +3,10 @@
 // Client-side renderer for the accounts table. Owns:
 //   - per-row "Delete" with a native confirm dialog (room for a nicer modal
 //     later when we have shared UI primitives);
-//   - "Open Browser" button stub (links to /accounts/[id]/browser, the C2b
-//     route — disabled today with a tooltip noting it is not yet wired up);
+//   - "Open Browser" link (C2b — opens an interactive Chromium session
+//     proxied through noVNC at /accounts/[id]/browser); disabled only for
+//     accounts in ERROR status (operator should re-create or troubleshoot
+//     before launching a session);
 //   - "Edit" link.
 // The server component handles initial rendering; we re-fetch via
 // router.refresh() after a delete so the row disappears without a full page
@@ -150,14 +152,23 @@ export function AccountListClient({ accounts }: { accounts: AccountRow[] }) {
                   </td>
                   <td className="px-4 py-3 text-right">
                     <div className="flex justify-end gap-2">
-                      <button
-                        type="button"
-                        disabled
-                        title="Available after C2b — interactive browser session"
-                        className="inline-flex items-center justify-center rounded-md border border-neutral-300 bg-white px-2.5 py-1 text-xs font-medium text-neutral-400 shadow-sm"
-                      >
-                        Open Browser
-                      </button>
+                      {row.status === 'ERROR' ? (
+                        <button
+                          type="button"
+                          disabled
+                          title="Account is in ERROR; resolve the underlying issue before opening a session."
+                          className="inline-flex items-center justify-center rounded-md border border-neutral-300 bg-white px-2.5 py-1 text-xs font-medium text-neutral-400 shadow-sm"
+                        >
+                          Open Browser
+                        </button>
+                      ) : (
+                        <Link
+                          href={`/accounts/${row.id}/browser`}
+                          className="inline-flex items-center justify-center rounded-md border border-neutral-300 bg-white px-2.5 py-1 text-xs font-medium text-neutral-700 shadow-sm transition hover:bg-neutral-50"
+                        >
+                          Open Browser
+                        </Link>
+                      )}
                       <Link
                         href={`/accounts/${row.id}/edit`}
                         className="inline-flex items-center justify-center rounded-md border border-neutral-300 bg-white px-2.5 py-1 text-xs font-medium text-neutral-700 shadow-sm transition hover:bg-neutral-50"

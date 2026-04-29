@@ -35,6 +35,13 @@
     handle_path /novnc/* {
         reverse_proxy novnc:6080
     }
+    # Match both `/websockify` and `/websockify/<…>` so noVNC's WebSocket
+    # URL (built as `wss://<host>/websockify` from the iframe's `?path=`)
+    # always lands on the websockify proxy. Caddy's reverse_proxy handles
+    # the WebSocket Upgrade transparently.
+    handle /websockify {
+        reverse_proxy novnc:6080
+    }
     handle_path /websockify/* {
         reverse_proxy novnc:6080
     }
@@ -62,6 +69,13 @@
     }
 
     handle_path /novnc/* {
+        reverse_proxy novnc:6080
+    }
+    # Match both `/websockify` and `/websockify/<…>` so noVNC's WebSocket
+    # URL (built as `wss://<host>/websockify` from the iframe's `?path=`)
+    # always lands on the websockify proxy. Caddy's reverse_proxy handles
+    # the WebSocket Upgrade transparently.
+    handle /websockify {
         reverse_proxy novnc:6080
     }
     handle_path /websockify/* {
