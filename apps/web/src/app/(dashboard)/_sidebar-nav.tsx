@@ -9,7 +9,9 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
 const ITEMS = [
+  { href: '/', label: 'Dashboard' },
   { href: '/accounts', label: 'Accounts' },
+  { href: '/runs', label: 'Runs' },
   { href: '/settings', label: 'Settings' },
 ] as const;
 
@@ -19,8 +21,12 @@ export function SidebarNav() {
   return (
     <nav className="space-y-1" aria-label="Primary">
       {ITEMS.map((item) => {
+        // For `/`, only highlight on exact match — otherwise the prefix
+        // check would light it up on every page in the dashboard.
         const active =
-          pathname === item.href || pathname?.startsWith(`${item.href}/`);
+          item.href === '/'
+            ? pathname === '/'
+            : pathname === item.href || pathname?.startsWith(`${item.href}/`);
         return (
           <Link
             key={item.href}

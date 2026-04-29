@@ -59,6 +59,7 @@ import { prisma } from '../../lib/db.js';
 import { getInvenflowClient, InvenflowConfigError } from '../../lib/invenflow.js';
 import { InvenflowApiError } from '../../lib/invenflow-client.js';
 import { childLogger } from '../../lib/logger.js';
+import { dispatcher } from '../../notifications/dispatcher.js';
 import type {
   IngestLineItem,
   IngestLineResult,
@@ -143,7 +144,7 @@ type UploadCache = Map<string, string>;
 export async function processScrapePaidJob(
   job: Job<ScrapePaidJobData, JobResult>,
 ): Promise<JobResult> {
-  const { accountId, triggeredBy } = job.data;
+  const { accountId, triggeredBy, runId: jobRunId } = job.data;
 
   // 1. Active-session guard (PRD §7.3.3).
   const redis = getRedisConnection();
@@ -170,16 +171,56 @@ export async function processScrapePaidJob(
     throw new Error(`Account ${accountId} not found`);
   }
 
-  // 3. Create the Run row up-front so a crash inside Stagehand still leaves
-  //    a discoverable failed record in run history.
-  const run = await prisma.run.create({
-    data: {
-      accountId,
-      pass: RunPass.PAID,
-      status: RunStatus.RUNNING,
-      triggeredBy: triggeredBy === 'manual' ? TriggerType.MANUAL : TriggerType.SCHEDULED,
-    },
-  });
+  // 3. Resolve the Run row. If the caller pre-created one (C5 manual-trigger
+  //    path), reuse it after flipping it to RUNNING. Otherwise create a new
+  //    one up-front so a crash inside Stagehand still leaves a discoverable
+  //    failed record in run history.
+  let run: { id: string };
+  if (jobRunId) {
+    const existing = await prisma.run.findUnique({ where: { id: jobRunId } });
+    if (!existing) {
+      log.warn(
+        { jobRunId },
+        'scrape-paid: provided runId not found; creating a fresh Run',
+      );
+      run = await prisma.run.create({
+        data: {
+          accountId,
+          pass: RunPass.PAID,
+          status: RunStatus.RUNNING,
+          triggeredBy:
+            triggeredBy === 'manual' ? TriggerType.MANUAL : TriggerType.SCHEDULED,
+        },
+      });
+    } else {
+      run = await prisma.run.update({
+        where: { id: jobRunId },
+        data: { status: RunStatus.RUNNING, startedAt: new Date() },
+      });
+    }
+  } else {
+    run = await prisma.run.create({
+      data: {
+        accountId,
+        pass: RunPass.PAID,
+        status: RunStatus.RUNNING,
+        triggeredBy:
+          triggeredBy === 'manual' ? TriggerType.MANUAL : TriggerType.SCHEDULED,
+      },
+    });
+  }
+
+  // Notify run start (toggle is checked inside the dispatcher; default off).
+  // Wrap in try/catch — a Fonnte failure must never abort the run.
+  try {
+    const fullRun = await prisma.run.findUnique({ where: { id: run.id } });
+    if (fullRun) await dispatcher.notifyRunStarted(fullRun, account);
+  } catch (err) {
+    log.warn(
+      { err: (err as Error).message },
+      'scrape-paid: notifyRunStarted suppressed',
+    );
+  }
 
   const screenshotDir = join(tmpdir(), 'screenshots', run.id);
 
@@ -249,7 +290,7 @@ export async function processScrapePaidJob(
     }
 
     // 7. Mark Run successful.
-    await prisma.run.update({
+    const finalized = await prisma.run.update({
       where: { id: run.id },
       data: {
         status: RunStatus.SUCCESS,
@@ -265,6 +306,15 @@ export async function processScrapePaidJob(
       'scrape-paid: run complete',
     );
 
+    try {
+      await dispatcher.notifyRunSucceeded(finalized, account);
+    } catch (err) {
+      log.warn(
+        { err: (err as Error).message },
+        'scrape-paid: notifyRunSucceeded suppressed',
+      );
+    }
+
     return {
       ok: true,
       message: 'scrape-paid run succeeded',
@@ -277,7 +327,7 @@ export async function processScrapePaidJob(
         where: { id: accountId },
         data: { status: AccountStatus.SESSION_EXPIRED },
       });
-      await prisma.run.update({
+      const failed = await prisma.run.update({
         where: { id: run.id },
         data: {
           status: RunStatus.FAILED,
@@ -292,6 +342,19 @@ export async function processScrapePaidJob(
         { runId: run.id, accountId, currentUrl: err.currentUrl },
         'scrape-paid: session expired; account flagged',
       );
+      try {
+        await dispatcher.notifySessionExpired(account);
+        await dispatcher.notifyRunFailed(
+          failed,
+          account,
+          'Session expired — re-login required.',
+        );
+      } catch (notifyErr) {
+        log.warn(
+          { err: (notifyErr as Error).message },
+          'scrape-paid: notification suppressed',
+        );
+      }
       return {
         ok: false,
         message: 'session expired',
@@ -300,7 +363,7 @@ export async function processScrapePaidJob(
     }
 
     if (err instanceof InvenflowConfigError) {
-      await prisma.run.update({
+      const failed = await prisma.run.update({
         where: { id: run.id },
         data: {
           status: RunStatus.FAILED,
@@ -315,6 +378,14 @@ export async function processScrapePaidJob(
         { runId: run.id, accountId, err: err.message },
         'scrape-paid: invenflow config missing',
       );
+      try {
+        await dispatcher.notifyRunFailed(failed, account, err.message);
+      } catch (notifyErr) {
+        log.warn(
+          { err: (notifyErr as Error).message },
+          'scrape-paid: notification suppressed',
+        );
+      }
       return {
         ok: false,
         message: 'invenflow config missing',
@@ -326,7 +397,7 @@ export async function processScrapePaidJob(
       const errorMessage = err.code
         ? `InvenFlow ${err.status} ${err.code}: ${err.message}`
         : `InvenFlow ${err.status}: ${err.message}`;
-      await prisma.run.update({
+      const failed = await prisma.run.update({
         where: { id: run.id },
         data: {
           status: RunStatus.FAILED,
@@ -341,6 +412,14 @@ export async function processScrapePaidJob(
         { runId: run.id, accountId, status: err.status, code: err.code },
         'scrape-paid: invenflow API error',
       );
+      try {
+        await dispatcher.notifyRunFailed(failed, account, errorMessage);
+      } catch (notifyErr) {
+        log.warn(
+          { err: (notifyErr as Error).message },
+          'scrape-paid: notification suppressed',
+        );
+      }
       return {
         ok: false,
         message: 'invenflow API error',
@@ -353,7 +432,7 @@ export async function processScrapePaidJob(
       err instanceof ScrapeFailedError
         ? `Scrape failed: ${err.message}`
         : `Unexpected error: ${(err as Error).message}`;
-    await prisma.run.update({
+    const failed = await prisma.run.update({
       where: { id: run.id },
       data: {
         status: RunStatus.FAILED,
@@ -368,6 +447,14 @@ export async function processScrapePaidJob(
       { runId: run.id, accountId, err: (err as Error).message },
       'scrape-paid: run failed',
     );
+    try {
+      await dispatcher.notifyRunFailed(failed, account, message);
+    } catch (notifyErr) {
+      log.warn(
+        { err: (notifyErr as Error).message },
+        'scrape-paid: notification suppressed',
+      );
+    }
     return {
       ok: false,
       message: 'scrape-paid failed',

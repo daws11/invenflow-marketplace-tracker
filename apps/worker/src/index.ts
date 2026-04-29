@@ -23,12 +23,21 @@ import { logger } from './lib/logger.js';
 import { getRedisConnection } from './queue/connection.js';
 import { getAllQueues } from './queue/queues.js';
 import { startWorkers } from './queue/workers.js';
+import { syncCronRegistrations } from './scheduler/cron.js';
 
 const SHUTDOWN_TIMEOUT_MS = 30_000;
 const RETRY_ATTEMPTS = 3;
 const CONNECT_PROBE_TIMEOUT_MS = 5_000;
 
+/**
+ * Periodic cron-resync interval. Per cron.ts header — accept up to this
+ * much lag between an Account.cron* update in the web UI and the new
+ * schedule taking effect on the BullMQ side.
+ */
+const CRON_RESYNC_INTERVAL_MS = 5 * 60 * 1000;
+
 let workers: Worker[] = [];
+let cronTimer: NodeJS.Timeout | null = null;
 let shuttingDown = false;
 
 async function main(): Promise<void> {
@@ -88,6 +97,30 @@ async function main(): Promise<void> {
     { workerCount: workers.length, queues: getAllQueues().map((q) => q.name) },
     'workers started',
   );
+
+  // 5b. Initial cron registration sync. Best-effort — a transient failure
+  //     here doesn't abort startup; the periodic resync below will catch
+  //     up on the next tick.
+  try {
+    await syncCronRegistrations();
+  } catch (err) {
+    logger.warn(
+      { err: (err as Error).message },
+      'initial cron sync failed; relying on periodic resync',
+    );
+  }
+
+  // 5c. Periodic resync — see cron.ts header for the trade-off rationale.
+  cronTimer = setInterval(() => {
+    void syncCronRegistrations().catch((err: unknown) => {
+      logger.warn(
+        { err: err instanceof Error ? err.message : String(err) },
+        'cron resync failed (will retry next interval)',
+      );
+    });
+  }, CRON_RESYNC_INTERVAL_MS);
+  // Don't keep the loop alive solely for the resync timer.
+  cronTimer.unref();
 
   // 6. Signals.
   process.on('SIGINT', () => void handleSignal('SIGINT'));
@@ -193,6 +226,12 @@ async function handleSignal(signal: string): Promise<void> {
   shutdownTimer.unref();
 
   try {
+    // Stop the cron resync timer so it doesn't fire mid-shutdown.
+    if (cronTimer) {
+      clearInterval(cronTimer);
+      cronTimer = null;
+    }
+
     // Stop accepting new jobs but let in-flight ones finish.
     await Promise.all(workers.map((w) => w.close(false)));
     logger.info('workers closed');

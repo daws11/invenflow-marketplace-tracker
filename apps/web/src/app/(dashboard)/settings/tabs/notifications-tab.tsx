@@ -22,6 +22,7 @@ interface Values {
   notifyOnRunFail: boolean;
   notifyOnLoginRequired: boolean;
   notifyOnSessionExpired: boolean;
+  notifyOnDailyDigest: boolean;
 }
 
 interface TestResult {
@@ -37,6 +38,7 @@ const INITIAL: Values = {
   notifyOnRunFail: true,
   notifyOnLoginRequired: true,
   notifyOnSessionExpired: true,
+  notifyOnDailyDigest: true,
 };
 
 export function NotificationsTab() {
@@ -64,6 +66,9 @@ export function NotificationsTab() {
           notifyOnRunFail: !!data.notifyOnRunFail,
           notifyOnLoginRequired: !!data.notifyOnLoginRequired,
           notifyOnSessionExpired: !!data.notifyOnSessionExpired,
+          // Daily digest defaults ON; treat a missing setting as `true` so a
+          // fresh install gets the digest without an explicit save.
+          notifyOnDailyDigest: data.notifyOnDailyDigest !== false,
         });
       } catch (err) {
         setBanner({ kind: 'error', msg: (err as Error).message });
@@ -85,6 +90,7 @@ export function NotificationsTab() {
         notifyOnRunFail: values.notifyOnRunFail,
         notifyOnLoginRequired: values.notifyOnLoginRequired,
         notifyOnSessionExpired: values.notifyOnSessionExpired,
+        notifyOnDailyDigest: values.notifyOnDailyDigest,
       };
       if (
         tokenTouched &&
@@ -207,6 +213,14 @@ export function NotificationsTab() {
           checked={values.notifyOnSessionExpired}
           onChange={(b) =>
             setValues((v) => ({ ...v, notifyOnSessionExpired: b }))
+          }
+        />
+        <Toggle
+          id="notifyOnDailyDigest"
+          label="Daily digest (6 PM Asia/Jakarta)"
+          checked={values.notifyOnDailyDigest}
+          onChange={(b) =>
+            setValues((v) => ({ ...v, notifyOnDailyDigest: b }))
           }
         />
       </fieldset>

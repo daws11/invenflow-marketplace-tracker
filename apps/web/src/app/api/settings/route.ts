@@ -39,6 +39,7 @@ interface SettingsResponse {
   notifyOnRunFail: boolean;
   notifyOnLoginRequired: boolean;
   notifyOnSessionExpired: boolean;
+  notifyOnDailyDigest: boolean;
 }
 
 const NON_SECRET_KEYS = [
@@ -53,6 +54,7 @@ const NON_SECRET_KEYS = [
   SETTING_KEYS.notifyOnRunFail,
   SETTING_KEYS.notifyOnLoginRequired,
   SETTING_KEYS.notifyOnSessionExpired,
+  SETTING_KEYS.notifyOnDailyDigest,
 ] as const;
 
 function asString(v: unknown): string | null {
@@ -91,6 +93,12 @@ export async function GET() {
     notifyOnRunFail: asBool(map.get(SETTING_KEYS.notifyOnRunFail)),
     notifyOnLoginRequired: asBool(map.get(SETTING_KEYS.notifyOnLoginRequired)),
     notifyOnSessionExpired: asBool(map.get(SETTING_KEYS.notifyOnSessionExpired)),
+    // Default ON: a missing row reads as `true` so a fresh install gets the
+    // 6 PM digest without an explicit save.
+    notifyOnDailyDigest:
+      map.get(SETTING_KEYS.notifyOnDailyDigest) === undefined
+        ? true
+        : asBool(map.get(SETTING_KEYS.notifyOnDailyDigest)),
   };
 
   return NextResponse.json(body);
@@ -116,6 +124,7 @@ const PatchSchema = z
     notifyOnRunFail: z.boolean().optional(),
     notifyOnLoginRequired: z.boolean().optional(),
     notifyOnSessionExpired: z.boolean().optional(),
+    notifyOnDailyDigest: z.boolean().optional(),
   })
   .strict();
 
@@ -207,6 +216,10 @@ export async function PATCH(req: Request) {
         SETTING_KEYS.notifyOnSessionExpired,
         data.notifyOnSessionExpired,
       ),
+    );
+  if (data.notifyOnDailyDigest !== undefined)
+    writes.push(
+      setSetting(SETTING_KEYS.notifyOnDailyDigest, data.notifyOnDailyDigest),
     );
 
   await Promise.all(writes);

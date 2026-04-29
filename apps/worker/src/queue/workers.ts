@@ -16,13 +16,16 @@ import { Worker, type Job } from 'bullmq';
 import { childLogger } from '../lib/logger.js';
 import { getRedisConnection } from './connection.js';
 import { processBrowserSessionJob } from './processors/browser-session.js';
+import { processDailyDigestJob } from './processors/daily-digest.js';
 import { processScrapePaidJob } from './processors/scrape-paid.js';
 import { processScrapeShippedJob } from './processors/scrape-shipped.js';
 import {
   QUEUE_BROWSER_SESSION,
+  QUEUE_DAILY_DIGEST,
   QUEUE_SCRAPE_PAID,
   QUEUE_SCRAPE_SHIPPED,
   type BrowserSessionJobData,
+  type DailyDigestJobData,
   type JobResult,
   type ScrapePaidJobData,
   type ScrapeShippedJobData,
@@ -92,5 +95,15 @@ export function startWorkers(): Worker[] {
     processScrapeShippedJob,
   );
 
-  return [browserSessionWorker, scrapePaidWorker, scrapeShippedWorker];
+  const dailyDigestWorker = makeWorker<DailyDigestJobData, JobResult>(
+    QUEUE_DAILY_DIGEST,
+    processDailyDigestJob,
+  );
+
+  return [
+    browserSessionWorker,
+    scrapePaidWorker,
+    scrapeShippedWorker,
+    dailyDigestWorker,
+  ];
 }

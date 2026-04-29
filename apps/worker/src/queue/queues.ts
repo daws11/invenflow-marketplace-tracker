@@ -21,11 +21,13 @@ import { getRedisConnection } from './connection.js';
 export const QUEUE_BROWSER_SESSION = 'browser-session' as const;
 export const QUEUE_SCRAPE_PAID = 'scrape-paid' as const;
 export const QUEUE_SCRAPE_SHIPPED = 'scrape-shipped' as const;
+export const QUEUE_DAILY_DIGEST = 'daily-digest' as const;
 
 export type QueueName =
   | typeof QUEUE_BROWSER_SESSION
   | typeof QUEUE_SCRAPE_PAID
-  | typeof QUEUE_SCRAPE_SHIPPED;
+  | typeof QUEUE_SCRAPE_SHIPPED
+  | typeof QUEUE_DAILY_DIGEST;
 
 // -----------------------------------------------------------------------------
 // Job-data + result types
@@ -63,11 +65,32 @@ export interface BrowserSessionJobData extends BaseJobData {
 export interface ScrapePaidJobData extends BaseJobData {
   /** Optional override URL (per-account); resolved by C3. */
   urlOverride?: string;
+  /**
+   * Optional pre-created Run id (C5 manual-trigger path). When present, the
+   * processor uses this Run row instead of creating one — this lets the
+   * web's manual-trigger endpoint return a `runId` immediately so the UI
+   * can navigate to the run-detail page and poll for status.
+   */
+  runId?: string;
 }
 
 /** Scrape "dikirim" (shipped) job. */
 export interface ScrapeShippedJobData extends BaseJobData {
   urlOverride?: string;
+  /**
+   * Optional pre-created Run id (C5 manual-trigger path). When present, the
+   * processor uses this Run row instead of creating one.
+   */
+  runId?: string;
+}
+
+/**
+ * Daily-digest job — composes a single WhatsApp message summarizing today's
+ * shipped-pass runs. Job-data is intentionally trivial; the processor reads
+ * the trailing-24h Run rows from Postgres (PRD §7.7 daily digest).
+ */
+export interface DailyDigestJobData {
+  kind: 'daily-digest';
 }
 
 /**
@@ -102,9 +125,14 @@ export const scrapeShippedQueue = new Queue<ScrapeShippedJobData, JobResult>(
   { connection },
 );
 
+export const dailyDigestQueue = new Queue<DailyDigestJobData, JobResult>(
+  QUEUE_DAILY_DIGEST,
+  { connection },
+);
+
 /**
  * All queues in a single iterable — used by graceful shutdown to close
  * each one without hard-coding a list at the call site.
  */
 export const getAllQueues = () =>
-  [browserSessionQueue, scrapePaidQueue, scrapeShippedQueue] as const;
+  [browserSessionQueue, scrapePaidQueue, scrapeShippedQueue, dailyDigestQueue] as const;

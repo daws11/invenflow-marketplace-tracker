@@ -27,6 +27,7 @@ export const SETTING_KEYS = {
   notifyOnRunFail: 'notify.runFail',
   notifyOnLoginRequired: 'notify.loginRequired',
   notifyOnSessionExpired: 'notify.sessionExpired',
+  notifyOnDailyDigest: 'notify.dailyDigest',
 } as const;
 
 export type SettingKey = (typeof SETTING_KEYS)[keyof typeof SETTING_KEYS];

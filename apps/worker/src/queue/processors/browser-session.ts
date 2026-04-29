@@ -38,6 +38,7 @@ import { createStagehand } from '../../browser/factory.js';
 import { type Platform as ProfilePlatform } from '../../browser/profile-manager.js';
 import { prisma } from '../../lib/db.js';
 import { childLogger } from '../../lib/logger.js';
+import { dispatcher } from '../../notifications/dispatcher.js';
 import { getRedisConnection } from '../connection.js';
 import {
   QUEUE_BROWSER_SESSION,
@@ -238,6 +239,16 @@ export async function processBrowserSessionJob(
 
     await setStatus(redis, sessionId, 'ready');
 
+    // Notify operator that the browser is open and awaiting input.
+    try {
+      await dispatcher.notifyBrowserSessionOpened(account, sessionId);
+    } catch (err) {
+      log.warn(
+        { err: (err as Error).message },
+        'browser-session: notifyBrowserSessionOpened suppressed',
+      );
+    }
+
     // -------------------------------------------------------------------
     // Poll loop — 1Hz check of (command, deadlines).
     // -------------------------------------------------------------------
@@ -281,7 +292,7 @@ export async function processBrowserSessionJob(
         ? AccountStatus.LOGGED_IN
         : AccountStatus.SESSION_EXPIRED;
       finalStatusLabel = verified ? 'logged-in' : 'session-expired';
-      await prisma.account.update({
+      const updated = await prisma.account.update({
         where: { id: account.id },
         data: { status: next, lastLoginAt: new Date() },
       });
@@ -289,6 +300,16 @@ export async function processBrowserSessionJob(
         { sessionId, accountId, verified },
         `browser-session: save → Account.status=${next}`,
       );
+      if (!verified) {
+        try {
+          await dispatcher.notifySessionExpired(updated);
+        } catch (err) {
+          log.warn(
+            { err: (err as Error).message },
+            'browser-session: notifySessionExpired suppressed',
+          );
+        }
+      }
     } else {
       // close / cancel / idle — keep the prior status, but record the
       // login timestamp (per the spec: "if uncertain, just update
