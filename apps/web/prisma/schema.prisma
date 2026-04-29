@@ -1,0 +1,244 @@
+// =============================================================================
+// InvenFlow Marketplace Tracker — Sidecar Prisma schema
+//
+// Source of truth: PRD v2 §10 "Sidecar Data Model (Prisma)".
+// This schema is for the *sidecar* database only. The sidecar talks to
+// InvenFlow over HTTPS using a service token; it does NOT share a database
+// with InvenFlow. In particular, the `ServiceToken` model below is the
+// sidecar's local *reference* to a token created in InvenFlow — it stores the
+// encrypted token blob (`tokenEnc`) so the sidecar can authenticate calls.
+// It is unrelated to InvenFlow's own `service_tokens` table (which stores
+// only a bcrypt hash, not the raw token).
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// -----------------------------------------------------------------------------
+// App users (sidecar-local accounts; v1 ships with a single admin)
+// -----------------------------------------------------------------------------
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  /// bcrypt(cost=12) hash of the user's password. Never store plaintext.
+  password  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+// -----------------------------------------------------------------------------
+// Marketplace accounts (one per platform login)
+// -----------------------------------------------------------------------------
+
+enum Platform {
+  TOKOPEDIA
+  SHOPEE
+}
+
+enum AccountStatus {
+  NOT_LOGGED_IN
+  LOGGED_IN
+  SESSION_EXPIRED
+  ERROR
+}
+
+model Account {
+  id          String        @id @default(cuid())
+  platform    Platform
+  name        String
+  status      AccountStatus @default(NOT_LOGGED_IN)
+  lastLoginAt DateTime?
+
+  cronEnabled         Boolean @default(true)
+  cronScheduleDibayar String  @default("0 10 * * 1-5")
+  cronScheduleDikirim String  @default("0 14 * * 1-5")
+
+  // InvenFlow target
+  invenflowKanbanId     String
+  invenflowKanbanName   String
+  columnOnPaid          String
+  columnOnShipped       String
+  /// FK to ServiceToken (sidecar-local reference; see file header).
+  invenflowAuthTokenRef String
+  paidUrlOverride       String?
+  shippedUrlOverride    String?
+
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  runs   Run[]
+  orders Order[]
+}
+
+// -----------------------------------------------------------------------------
+// Service token reference (sidecar-local)
+//
+// Holds the encrypted full token (`tokenEnc`) so the sidecar can call
+// InvenFlow with `Authorization: Bearer <decrypted token>`. The corresponding
+// authoritative record (with bcrypt hash, scopes, allowedKanbanIds, etc.)
+// lives in InvenFlow's `service_tokens` table.
+// -----------------------------------------------------------------------------
+
+model ServiceToken {
+  id           String   @id @default(cuid())
+  name         String
+  /// AES-256-GCM ciphertext (base64) of the raw `inv_svc_…` token.
+  tokenEnc     String
+  /// First 8 chars of the raw token, kept in plaintext for UI display only.
+  prefix       String
+  /// Base URL of the InvenFlow instance this token works against.
+  invenflowUrl String
+  createdAt    DateTime @default(now())
+}
+
+// -----------------------------------------------------------------------------
+// Runs (one per scrape pass / login)
+// -----------------------------------------------------------------------------
+
+enum RunPass {
+  PAID
+  SHIPPED
+  LOGIN
+}
+
+enum RunStatus {
+  PENDING
+  RUNNING
+  SUCCESS
+  FAILED
+  CANCELED
+}
+
+enum TriggerType {
+  SCHEDULED
+  MANUAL
+}
+
+model Run {
+  id              String      @id @default(cuid())
+  accountId       String
+  account         Account     @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  pass            RunPass
+  status          RunStatus   @default(PENDING)
+  triggeredBy     TriggerType @default(SCHEDULED)
+  startedAt       DateTime    @default(now())
+  completedAt     DateTime?
+  errorMessage    String?
+  modelUsed       String?
+  orderCount      Int         @default(0)
+  newOrderCount   Int         @default(0)
+  transitionCount Int         @default(0)
+  failedSyncs     Int         @default(0)
+
+  orders Order[]
+
+  @@index([accountId, startedAt])
+  @@index([status])
+}
+
+// -----------------------------------------------------------------------------
+// Orders + line items
+// -----------------------------------------------------------------------------
+
+model Order {
+  id            String   @id @default(cuid())
+  runId         String
+  accountId     String
+  invoiceNumber String
+  orderDate     DateTime
+  sellerName    String?
+  totalAmount   Decimal  @db.Decimal(15, 2)
+  shippingFee   Decimal? @db.Decimal(15, 2)
+  discount      Decimal? @db.Decimal(15, 2)
+  rawData       Json
+  createdAt     DateTime @default(now())
+
+  run       Run             @relation(fields: [runId], references: [id], onDelete: Cascade)
+  account   Account         @relation(fields: [accountId], references: [id])
+  lineItems OrderLineItem[]
+
+  @@unique([accountId, invoiceNumber])
+  @@index([invoiceNumber])
+}
+
+enum LifecycleState {
+  NEW
+  INGESTED
+  SHIPPED_CONFIRMED
+  SHIPPED_BUT_OPERATOR_MOVED
+  SYNC_FAILED
+}
+
+model OrderLineItem {
+  id                     String  @id @default(cuid())
+  orderId                String
+  order                  Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  /// Sidecar-generated stable id (platform-invoice-line).
+  lineItemId             String
+  marketplaceProductName String
+  marketplaceProductUrl  String?
+  quantity               Int
+  unitPrice              Decimal @db.Decimal(15, 2)
+  subtotal               Decimal @db.Decimal(15, 2)
+
+  // InvenFlow tracking
+  invenflowProductId String?
+  needsSkuMapping    Boolean        @default(false)
+  lifecycleState     LifecycleState @default(NEW)
+  lastSyncError      String?
+  syncRetryCount     Int            @default(0)
+  ingestedAt         DateTime?
+  shippedAt          DateTime?
+
+  @@unique([orderId, lineItemId])
+  @@index([invenflowProductId])
+  @@index([lifecycleState])
+}
+
+// -----------------------------------------------------------------------------
+// Settings (AI, generic key-value, audit log)
+// -----------------------------------------------------------------------------
+
+model AiSettings {
+  id          String   @id @default(cuid())
+  provider    String
+  model       String
+  /// AES-256-GCM ciphertext (base64) of the API key.
+  apiKey      String
+  baseUrl     String?
+  temperature Float    @default(0)
+  maxRetries  Int      @default(3)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Setting {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  /// JSON-serialized value. Encrypted (AES-256-GCM, base64) when isSecret = true.
+  value     String
+  isSecret  Boolean  @default(false)
+  updatedAt DateTime @updatedAt
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  action    String
+  entity    String?
+  entityId  String?
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([entity, entityId])
+}
