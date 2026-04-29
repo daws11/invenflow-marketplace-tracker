@@ -6,9 +6,19 @@
 
 import { signIn } from 'next-auth/react';
 import { useSearchParams } from 'next/navigation';
-import { type FormEvent, useState } from 'react';
+import { Suspense, type FormEvent, useState } from 'react';
 
+// Wraps the form in a Suspense boundary because useSearchParams in a client
+// component triggers Next.js's CSR bailout requirement during prerender.
 export default function LoginPage() {
+  return (
+    <Suspense fallback={null}>
+      <LoginForm />
+    </Suspense>
+  );
+}
+
+function LoginForm() {
   const searchParams = useSearchParams();
   const callbackUrl = searchParams.get('callbackUrl') ?? '/';
 

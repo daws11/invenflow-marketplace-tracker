@@ -38,7 +38,7 @@ test('decrypt throws on tampered ciphertext (auth tag mismatch)', () => {
   const ct = encrypt('do not modify');
   // Flip a bit in the middle of the blob.
   const buf = Buffer.from(ct, 'base64');
-  buf[__testing.IV_LENGTH + 1] ^= 0x01;
+  buf[__testing.IV_LENGTH + 1] = (buf[__testing.IV_LENGTH + 1] ?? 0) ^ 0x01;
   const tampered = buf.toString('base64');
   assert.throws(() => decrypt(tampered));
 });

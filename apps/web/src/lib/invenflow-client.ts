@@ -199,7 +199,10 @@ export class InvenflowClient {
       const synthetic = new AxiosError(
         `Request failed with status ${status}`,
         undefined,
-        config,
+        // axios v1 narrowed the constructor's config type to
+        // InternalAxiosRequestConfig; the public AxiosRequestConfig we hold
+        // is structurally compatible at runtime.
+        config as never,
         undefined,
         response,
       );
