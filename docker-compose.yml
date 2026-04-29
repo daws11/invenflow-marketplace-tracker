@@ -1,0 +1,134 @@
+# =============================================================================
+# InvenFlow Marketplace Tracker — Docker Compose stack (PRD §7.3)
+#
+# Six services on a single internal network. Only Caddy publishes ports to the
+# host; everything else is reachable strictly through Caddy's reverse proxy.
+#
+#   caddy     :80, :443  →  reverse proxy (auto HTTPS via Let's Encrypt)
+#   web                  →  Next.js (UI + API routes)
+#   worker               →  Stagehand / Playwright + Xvfb + x11vnc :5900
+#   novnc                →  noVNC web client + websockify proxy :6080
+#   postgres             →  PostgreSQL 16 :5432
+#   redis                →  Redis 7 :6379
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Reverse proxy / TLS terminator
+  # ---------------------------------------------------------------------------
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+      - novnc
+
+  # ---------------------------------------------------------------------------
+  # Next.js app (UI + API). NO host ports — only reachable via Caddy.
+  # NOTE: build context is the repo root because the Dockerfile installs the
+  # whole pnpm workspace (root package.json + pnpm-workspace.yaml). Spec said
+  # "build ./apps/web" — using the explicit context/dockerfile form is the
+  # standard pnpm-monorepo pattern; functionally equivalent.
+  # ---------------------------------------------------------------------------
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    expose:
+      - "3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+  # ---------------------------------------------------------------------------
+  # Browser worker (BullMQ + Stagehand + headed Chromium under Xvfb).
+  # Internal ports 5900 (x11vnc) and 6080 (placeholder) — not exposed to host.
+  # ---------------------------------------------------------------------------
+  worker:
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    expose:
+      - "5900"
+      - "6080"
+    volumes:
+      - ./data/profiles:/data/profiles
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # noVNC web client + websockify proxy. Proxies ws traffic to worker:5900.
+  # ---------------------------------------------------------------------------
+  novnc:
+    build:
+      context: ./docker/novnc
+    restart: unless-stopped
+    expose:
+      - "6080"
+    depends_on:
+      - worker
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — sidecar's own database (separate from InvenFlow's).
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: app
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "app", "-d", "app"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # Redis — BullMQ queue + cache.
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - ./data/redis:/data
+    expose:
+      - "6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  caddy_data:
+  caddy_config:

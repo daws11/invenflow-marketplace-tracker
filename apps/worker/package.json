@@ -1,0 +1,27 @@
+{
+  "name": "@invenflow-tracker/worker",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@browserbasehq/stagehand": "^1.13.0",
+    "@prisma/client": "^5.22.0",
+    "axios": "^1.7.7",
+    "bullmq": "^5.21.0",
+    "ioredis": "^5.4.1",
+    "pino": "^9.5.0",
+    "playwright": "1.48.0",
+    "playwright-extra": "^4.3.6",
+    "puppeteer-extra-plugin-stealth": "^2.11.2",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.16.11",
+    "tsx": "^4.19.1",
+    "typescript": "^5.5.4"
+  }
+}

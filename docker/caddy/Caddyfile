@@ -1,0 +1,74 @@
+# =============================================================================
+# Caddy reverse proxy for the InvenFlow Marketplace Tracker stack.
+#
+# Two virtual hosts:
+#   1. {$DOMAIN}     — public host with auto Let's Encrypt + security headers.
+#                      Used in production when DOMAIN is something like
+#                      tracker.example.com.
+#   2. :80           — plain-HTTP fallback for local development. Caddy picks
+#                      this up when DOMAIN=localhost (or any non-public name).
+#
+# Routing:
+#   /api/*, /_next/*, /        → web:3000  (Next.js)
+#   /novnc/*, /websockify/*    → novnc:6080 (noVNC client + websockify proxy)
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Production / configured-domain stanza
+# -----------------------------------------------------------------------------
+{$DOMAIN} {
+    encode zstd gzip
+
+    # PRD §12 security headers. X-Frame-Options is SAMEORIGIN so the noVNC
+    # iframe served from the same host can render inside the dashboard.
+    header {
+        Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+        X-Frame-Options "SAMEORIGIN"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        # Don't leak Caddy version
+        -Server
+    }
+
+    # noVNC web client + WebSocket. The WebSocket upgrade is handled
+    # transparently by reverse_proxy; no extra config needed.
+    handle_path /novnc/* {
+        reverse_proxy novnc:6080
+    }
+    handle_path /websockify/* {
+        reverse_proxy novnc:6080
+    }
+
+    # Everything else is the Next.js app: the page tree, _next assets, and the
+    # API routes.
+    handle {
+        reverse_proxy web:3000
+    }
+}
+
+# -----------------------------------------------------------------------------
+# Local development stanza — used when DOMAIN=localhost. Caddy will match the
+# `:80` site if the request's Host header is not a configured domain. We keep
+# the same routing rules here, minus HSTS (no TLS in dev).
+# -----------------------------------------------------------------------------
+:80 {
+    encode zstd gzip
+
+    header {
+        X-Frame-Options "SAMEORIGIN"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "strict-origin-when-cross-origin"
+        -Server
+    }
+
+    handle_path /novnc/* {
+        reverse_proxy novnc:6080
+    }
+    handle_path /websockify/* {
+        reverse_proxy novnc:6080
+    }
+
+    handle {
+        reverse_proxy web:3000
+    }
+}
