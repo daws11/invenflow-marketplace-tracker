@@ -1,13 +1,15 @@
-// Tokopedia agent — paid-orders scrape (PRD §7.4.1).
+// Tokopedia agent — paid + shipped scrapes (PRD §7.4.1 / §7.4.2).
 //
-// C3a implements PASS A only (status `dibayar` / paid, awaiting shipment).
-// PASS B (`dikirim` / shipped) lands in C3b. The Stagehand instance is
+// C3a implemented PASS A (status `dibayar` / paid, awaiting shipment).
+// C3b adds PASS B (`dikirim` / shipped). The Stagehand instance is
 // constructed by the caller via `apps/worker/src/browser/factory.ts` so the
 // per-account profile, anti-detection args (PRD §13), and AI config (PRD
 // §11) are inherited from a single source of truth.
 //
-// Public contract — used by the scrape-paid processor:
+// Public contract — used by the scrape-paid / scrape-shipped processors:
 //   * `scrapePaid(stagehand, opts)` returns `{ orders, modelUsed }`.
+//   * `scrapeShipped(stagehand, opts)` returns `{ orders, modelUsed }` for
+//     the dikirim list (lighter schema — invoice + detail URL only).
 //   * `SessionExpiredError` thrown when the session cookie is invalid (page
 //     redirects to the login URL on navigation). Processor catches this and
 //     flips Account.status to SESSION_EXPIRED.
@@ -15,17 +17,18 @@
 //     this module. Processor surfaces the message in Run.errorMessage.
 //
 // Robustness notes:
-//   * The default URL is `https://www.tokopedia.com/order-list?status=dibayar`.
-//     PRD §7.4.1 / §18 OQ#1 explicitly call this out as needing live
-//     verification — Tokopedia changes URLs from time to time. The
-//     `paidUrlOverride` field on Account exists precisely so an operator can
-//     fix a URL drift without a code change.
-//   * Per-order detail-page screenshots are TODO. For now we capture ONE
-//     full-page screenshot of the list view and reuse its path for every
-//     order's `screenshotPath`. PRD §7.4.1 only requires that we attach
-//     proof; the per-order detail screenshot is a nicety to defer until C3b
-//     when Stagehand's act/observe loops are exercised against the real
-//     site. This trade-off is documented in the report.
+//   * The default URLs are `https://www.tokopedia.com/order-list?status=dibayar`
+//     (paid) and `https://www.tokopedia.com/order-list?status=dikirim`
+//     (shipped). PRD §7.4.1 / §7.4.2 / §18 OQ#1 explicitly call this out as
+//     needing live verification — Tokopedia changes URLs from time to time.
+//     The `paidUrlOverride` / `shippedUrlOverride` fields on Account exist
+//     precisely so an operator can fix a URL drift without a code change.
+//   * Per-order detail-page screenshots are TODO for both passes. For now
+//     we capture ONE full-page screenshot of the list view per run and
+//     reuse its path for every order's `screenshotPath`. PRD §7.4 only
+//     requires that we attach proof; the per-order detail screenshot is a
+//     nicety we defer to a later round (post-C3b) once Stagehand's
+//     act/observe loops are exercised against the real site.
 //   * Currency in IDR is rendered as `Rp 50.000` (or `Rp50.000`); we strip
 //     non-digits and parse to integer rupiah (contract §3.5).
 //   * Order date appears as `29 Apr 2026` etc. We map Indonesian month
@@ -435,5 +438,186 @@ function coerceOrder(raw: RawOrder, screenshotPath: string): ScrapedOrder {
   };
 }
 
+// -----------------------------------------------------------------------------
+// PASS B — Shipped (`dikirim`) scrape (C3b)
+//
+// Lighter schema than the paid pass — we only need `{ invoiceNumber,
+// detailUrl }` per order to drive the transition engine. The local DB
+// already has product/qty/price from the paid ingest; the shipped pass just
+// flips the lifecycle state and moves the kanban card.
+// -----------------------------------------------------------------------------
+
+export interface ShippedOrder {
+  invoiceNumber: string;
+  detailUrl: string | null;
+  /**
+   * Path to a single proof screenshot (full-page list, or per-order
+   * detail). Strategy mirrors paid: one full-page list screenshot reused
+   * per order is acceptable for v1.
+   */
+  screenshotPath: string;
+}
+
+export interface ScrapeShippedOptions {
+  accountId: string;
+  runId: string;
+  shippedUrlOverride?: string | null;
+  /** Where to write the list-view screenshot; processor passes /tmp/screenshots/<runId>. */
+  screenshotDir: string;
+}
+
+export interface ScrapeShippedResult {
+  orders: ShippedOrder[];
+  /** AI model name as recorded against `Run.modelUsed` (PRD §11.4). */
+  modelUsed: string;
+}
+
+/**
+ * Default shipped-orders URL.
+ *
+ * PRD §7.4.2 / §18 OQ#1: this URL needs live verification. Operators can
+ * override it per-account via `Account.shippedUrlOverride`. Mirrors the
+ * paid-pass URL strategy (single source-of-truth string here, override per
+ * account in the DB).
+ */
+const DEFAULT_SHIPPED_URL =
+  'https://www.tokopedia.com/order-list?status=dikirim';
+
+/**
+ * Stagehand instruction string for the shipped extraction. Lifted into a
+ * named constant so the processor / tests can log it and the report
+ * matches the literal sent to the model.
+ */
+const SHIPPED_EXTRACT_INSTRUCTION = [
+  'List every visible shipped order on this page.',
+  'For each order, extract the invoice number',
+  "(often shown as 'INV/...' or similar) and the URL to its detail / tracking",
+  'page if a link is present.',
+  'Set fields not visible to null.',
+].join(' ');
+
+const RawShippedOrderSchema = z.object({
+  invoiceNumber: z.string(),
+  detailUrl: z.string().nullable().optional(),
+});
+
+const ShippedExtractSchema = z.object({
+  orders: z.array(RawShippedOrderSchema),
+});
+
+export async function scrapeShipped(
+  stagehand: Stagehand,
+  options: ScrapeShippedOptions,
+): Promise<ScrapeShippedResult> {
+  const { accountId, runId, shippedUrlOverride, screenshotDir } = options;
+  const url =
+    shippedUrlOverride && shippedUrlOverride.length > 0
+      ? shippedUrlOverride
+      : DEFAULT_SHIPPED_URL;
+
+  // Read the active model name once so we can record it on Run.modelUsed.
+  let modelUsed: string;
+  try {
+    const ai = await getActiveAiSettings();
+    modelUsed = ai.model;
+  } catch (err) {
+    throw new ScrapeFailedError(
+      `Could not load active AI settings before scrape: ${(err as Error).message}`,
+      err,
+    );
+  }
+
+  log.info({ accountId, runId, url, modelUsed }, 'scrape-shipped: starting');
+
+  // 1. Navigate.
+  const page = stagehand.page;
+  try {
+    await page.goto(url, {
+      waitUntil: 'networkidle',
+      timeout: NAV_TIMEOUT_MS,
+    });
+  } catch (err) {
+    throw new ScrapeFailedError(
+      `Failed to navigate to ${url}: ${(err as Error).message}`,
+      err,
+    );
+  }
+
+  // 2. Login-redirect detection — same signals as the paid pass.
+  const landedUrl = page.url();
+  if (LOGIN_URL_SIGNALS.some((signal) => landedUrl.includes(signal))) {
+    log.warn(
+      { accountId, runId, landedUrl },
+      'scrape-shipped: redirected to login',
+    );
+    throw new SessionExpiredError(landedUrl);
+  }
+
+  // 3. Capture a list-view screenshot. Used as the proof artifact for every
+  //    transition on this run (per-order detail screenshots are deferred —
+  //    see file header).
+  await mkdir(screenshotDir, { recursive: true });
+  const listScreenshotPath = path.join(
+    screenshotDir,
+    `${runId}-shipped-list.png`,
+  );
+  try {
+    await page.screenshot({
+      path: listScreenshotPath,
+      fullPage: true,
+      type: 'png',
+    });
+  } catch (err) {
+    throw new ScrapeFailedError(
+      `Failed to capture list-view screenshot: ${(err as Error).message}`,
+      err,
+    );
+  }
+
+  // 4. Extract orders via Stagehand.
+  let extracted: z.infer<typeof ShippedExtractSchema>;
+  try {
+    extracted = await page.extract({
+      instruction: SHIPPED_EXTRACT_INSTRUCTION,
+      schema: ShippedExtractSchema,
+    });
+  } catch (err) {
+    throw new ScrapeFailedError(
+      `Stagehand extract() failed: ${(err as Error).message}`,
+      err,
+    );
+  }
+
+  log.info(
+    { accountId, runId, orderCount: extracted.orders.length },
+    'scrape-shipped: extraction complete',
+  );
+
+  // 5. Coerce — drop rows with no invoice number; everything else is light
+  //    enough to pass through directly.
+  const orders: ShippedOrder[] = [];
+  for (const raw of extracted.orders) {
+    const invoiceNumber = (raw.invoiceNumber ?? '').trim();
+    if (invoiceNumber.length === 0) {
+      log.warn(
+        { accountId, runId, raw },
+        'scrape-shipped: skipping order with empty invoice number',
+      );
+      continue;
+    }
+    orders.push({
+      invoiceNumber,
+      detailUrl: raw.detailUrl ?? null,
+      screenshotPath: listScreenshotPath,
+    });
+  }
+
+  return { orders, modelUsed };
+}
+
 // Exposed for tests.
-export const __testing = { coerceOrder, EXTRACT_INSTRUCTION };
+export const __testing = {
+  coerceOrder,
+  EXTRACT_INSTRUCTION,
+  SHIPPED_EXTRACT_INSTRUCTION,
+};
