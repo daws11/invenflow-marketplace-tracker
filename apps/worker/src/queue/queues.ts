@@ -39,6 +39,17 @@ export interface BaseJobData {
   triggeredBy: TriggeredBy;
 }
 
+/**
+ * Maps the wire `TriggeredBy` to the Prisma `TriggerType` enum used on
+ * `Run.triggeredBy`. C3a treats both `'cron'` and `'scheduled'` as
+ * SCHEDULED; only an explicit `'manual'` (e.g. from a UI trigger endpoint)
+ * lands as MANUAL. Centralized here so processors and producers agree on
+ * the mapping.
+ */
+export function toRunTriggerType(t: TriggeredBy | undefined): 'MANUAL' | 'SCHEDULED' {
+  return t === 'manual' ? 'MANUAL' : 'SCHEDULED';
+}
+
 /** Browser session job — interactive login / cookie refresh. */
 export interface BrowserSessionJobData extends BaseJobData {
   /**
