@@ -1,8 +1,9 @@
 # Dependencies
 node_modules/
 
-# Next.js build output
+# Build output
 .next/
+dist/
 
 # Local data volumes (mounted by docker compose)
 data/*
