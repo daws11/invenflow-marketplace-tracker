@@ -52,11 +52,12 @@ import {
 import type { Job } from 'bullmq';
 
 import {
-  scrapeShipped,
   ScrapeFailedError,
   SessionExpiredError,
   type ShippedOrder,
-} from '../../agents/tokopedia.js';
+} from '../../agents/_common.js';
+import { scrapeShipped as scrapeShopeeShipped } from '../../agents/shopee.js';
+import { scrapeShipped as scrapeTokopediaShipped } from '../../agents/tokopedia.js';
 import { createStagehand } from '../../browser/factory.js';
 import { type Platform as ProfilePlatform } from '../../browser/profile-manager.js';
 import { prisma } from '../../lib/db.js';
@@ -86,6 +87,29 @@ const DEFER_DELAY_MS = 60_000;
 /** Maps Prisma's `Platform` enum to the Stagehand factory profile platform. */
 function profilePlatformFor(p: PrismaPlatform): ProfilePlatform {
   return p === PrismaPlatform.TOKOPEDIA ? 'tokopedia' : 'shopee';
+}
+
+/**
+ * Dispatch the shipped-pass scraper by `Account.platform`. Both agents share
+ * the same `(stagehand, ScrapeShippedOptions) → ScrapeShippedResult`
+ * signature, so the call site is platform-agnostic from here on. The
+ * `satisfies never` default branch is a compile-time guard: if a new
+ * Platform enum value is added without a corresponding scraper, this file
+ * will fail to typecheck.
+ */
+function getShippedScraper(
+  platform: PrismaPlatform,
+): typeof scrapeTokopediaShipped {
+  switch (platform) {
+    case PrismaPlatform.TOKOPEDIA:
+      return scrapeTokopediaShipped;
+    case PrismaPlatform.SHOPEE:
+      return scrapeShopeeShipped;
+    default: {
+      const _exhaustive: never = platform;
+      throw new Error(`Unsupported platform: ${_exhaustive}`);
+    }
+  }
 }
 
 /**
@@ -186,12 +210,10 @@ export async function processScrapeShippedJob(
       interactive: false,
     });
 
-    // C3b is Tokopedia-only; Shopee lands in C4.
-    if (account.platform !== PrismaPlatform.TOKOPEDIA) {
-      throw new Error(
-        `scrape-shipped: only TOKOPEDIA is supported in C3b; got ${account.platform}`,
-      );
-    }
+    // C4: dispatch by platform — Tokopedia + Shopee both supported. The
+    // dispatcher's `satisfies never` default branch ensures any new Platform
+    // enum value will fail compilation here.
+    const scrapeShipped = getShippedScraper(account.platform);
 
     const scrape = await scrapeShipped(stagehand, {
       accountId,

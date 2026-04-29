@@ -1,39 +1,44 @@
-// Tokopedia agent — paid + shipped scrapes (PRD §7.4.1 / §7.4.2).
+// Shopee agent — paid + shipped scrapes (PRD §7.4.1 / §7.4.2).
 //
-// C3a implemented PASS A (status `dibayar` / paid, awaiting shipment).
-// C3b adds PASS B (`dikirim` / shipped). The Stagehand instance is
-// constructed by the caller via `apps/worker/src/browser/factory.ts` so the
-// per-account profile, anti-detection args (PRD §13), and AI config (PRD
-// §11) are inherited from a single source of truth.
+// Mirrors the Tokopedia agent (apps/worker/src/agents/tokopedia.ts) — same
+// public contract, same two-pass model (paid + shipped). The Stagehand
+// instance is constructed by the caller via `apps/worker/src/browser/
+// factory.ts`, which already accepts `platform: 'shopee'` and applies the
+// same anti-detection args + AI config.
 //
-// Public contract — used by the scrape-paid / scrape-shipped processors:
-//   * `scrapePaid(stagehand, opts)` returns `{ orders, modelUsed }`.
-//   * `scrapeShipped(stagehand, opts)` returns `{ orders, modelUsed }` for
-//     the dikirim list (lighter schema — invoice + detail URL only).
-//   * `SessionExpiredError` thrown when the session cookie is invalid (page
-//     redirects to the login URL on navigation). Processor catches this and
-//     flips Account.status to SESSION_EXPIRED.
-//   * `ScrapeFailedError` thrown for everything else that goes wrong inside
-//     this module. Processor surfaces the message in Run.errorMessage.
+// Shared (with Tokopedia) bits live in `_common.ts`:
+//   * IDR rupiah parsing (`parseRupiah`, `parseRupiahOrNull`)
+//   * `SessionExpiredError`, `ScrapeFailedError`
+//   * `ScrapedOrder` / `ScrapedLineItem` / `ShippedOrder` types
+//   * `NAV_TIMEOUT_MS`
 //
-// Robustness notes:
-//   * The default URLs are `https://www.tokopedia.com/order-list?status=dibayar`
-//     (paid) and `https://www.tokopedia.com/order-list?status=dikirim`
-//     (shipped). PRD §7.4.1 / §7.4.2 / §18 OQ#1 explicitly call this out as
-//     needing live verification — Tokopedia changes URLs from time to time.
-//     The `paidUrlOverride` / `shippedUrlOverride` fields on Account exist
-//     precisely so an operator can fix a URL drift without a code change.
-//   * Per-order detail-page screenshots are TODO for both passes. For now
-//     we capture ONE full-page screenshot of the list view per run and
-//     reuse its path for every order's `screenshotPath`. PRD §7.4 only
-//     requires that we attach proof; the per-order detail screenshot is a
-//     nicety we defer to a later round (post-C3b) once Stagehand's
-//     act/observe loops are exercised against the real site.
-//   * Currency in IDR is rendered as `Rp 50.000` (or `Rp50.000`); we strip
-//     non-digits and parse to integer rupiah (contract §3.5).
-//   * Order date appears as `29 Apr 2026` etc. We map Indonesian month
-//     abbreviations / full names to month numbers and emit
-//     `YYYY-MM-DD` strings the InvenFlow ingest endpoint accepts (§4.6).
+// Shopee-specific bits live HERE:
+//   * Default URLs (`?type=2` paid / `?type=3` shipped — see assumption below).
+//   * Login-redirect signals (`/buyer/login`, `login_signup`, `/sso/login`).
+//   * `parseShopeeDate` — handles both `2026-04-30 15:30` and the localized
+//     `30 April 2026` (Indonesian full-month-name) form.
+//   * Stagehand `extract()` instruction strings tailored to Shopee's UI
+//     vocabulary ("Order ID" / "No. Pesanan", different "view detail" labels).
+//
+// URL ASSUMPTIONS (PRD §18 OQ#1 — needs verification against a live Shopee
+// buyer account):
+//   * Paid (to_ship)         : https://shopee.co.id/user/purchase?type=2
+//   * Shipped (to_receive)   : https://shopee.co.id/user/purchase?type=3
+//
+// These follow Shopee's common `?type=N` filter convention. If real-account
+// verification shows a different number, operators can drop a custom URL
+// into `Account.paidUrlOverride` / `Account.shippedUrlOverride` without a
+// code change — the same escape hatch we use for Tokopedia.
+//
+// Login-redirect signals are likewise a reasonable guess (Shopee's mobile
+// flow uses `/buyer/login`; SSO and `login_signup` cover the desktop flow).
+// All three need verification with a real session-expired browser to make
+// sure we trip `SessionExpiredError` correctly.
+//
+// v1 screenshot strategy is identical to Tokopedia: ONE full-page list-view
+// screenshot per run, path reused as every order's `screenshotPath`. Per-
+// order detail-page screenshots are TODO and gated on Stagehand's act/
+// observe loops being exercised against real Shopee pages.
 
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
@@ -58,12 +63,11 @@ import {
   type ShippedOrder,
 } from './_common.js';
 
-const log = childLogger('agent:tokopedia');
+const log = childLogger('agent:shopee');
 
 // -----------------------------------------------------------------------------
-// Re-exports — keep the public surface stable for processors and tests that
-// import errors / types / parsers from `tokopedia.js` (those imports are
-// historical; new code should import from `_common.js` directly).
+// Re-exports — keep the public surface symmetric with `tokopedia.ts` so the
+// processors can import platform-agnostically when convenient.
 // -----------------------------------------------------------------------------
 
 export {
@@ -82,34 +86,56 @@ export type {
 } from './_common.js';
 
 // -----------------------------------------------------------------------------
-// Tokopedia-specific constants
+// Shopee-specific constants
 // -----------------------------------------------------------------------------
 
 /**
- * Default paid-orders URL.
+ * Default Shopee paid-orders (to-ship) URL.
  *
- * PRD §7.4.1 / §18 OQ#1: this URL needs live verification. Operators can
- * override it per-account via `Account.paidUrlOverride`.
+ * ASSUMPTION (PRD §18 OQ#1, §7.4.1): Shopee's "to ship / waiting for seller"
+ * tab is reachable at `?type=2` on the buyer purchase list. Verified against
+ * Shopee documentation patterns; needs final confirmation against a live
+ * buyer account. Operators can override per-account via
+ * `Account.paidUrlOverride` if Shopee shifts the filter index.
  */
-const DEFAULT_PAID_URL = 'https://www.tokopedia.com/order-list?status=dibayar';
+const DEFAULT_PAID_URL = 'https://shopee.co.id/user/purchase?type=2';
 
-/** Substrings that, when present in the navigated URL, indicate a redirect
- *  to login (session expired). */
-const LOGIN_URL_SIGNALS = ['/login', 'tokopedia.com/login', 'sso/login'] as const;
+/**
+ * Default Shopee shipped-orders (to-receive / in-transit) URL.
+ *
+ * ASSUMPTION (PRD §18 OQ#1, §7.4.2): Shopee's "shipped / to receive" tab is
+ * reachable at `?type=3`. Same verification caveat as the paid URL above —
+ * operators can override per-account via `Account.shippedUrlOverride`.
+ */
+const DEFAULT_SHIPPED_URL = 'https://shopee.co.id/user/purchase?type=3';
+
+/**
+ * Substrings that, when present in the navigated URL, indicate a redirect
+ * to a Shopee login flow (session expired). Best-effort guess covering the
+ * common variants:
+ *   * `/buyer/login`              — desktop buyer login
+ *   * `shopee.co.id/buyer/login`  — fully-qualified variant of the above
+ *   * `login_signup`              — Shopee's path-segment form for signin
+ *   * `/sso/login`                — single-sign-on bounce page
+ *
+ * Needs verification against a real session-expired browser; if Shopee's
+ * actual redirect target lands somewhere else, add the substring here.
+ */
+const SHOPEE_LOGIN_URL_SIGNALS = [
+  '/buyer/login',
+  'shopee.co.id/buyer/login',
+  'login_signup',
+  '/sso/login',
+] as const;
 
 // -----------------------------------------------------------------------------
-// Zod schema for Stagehand extract()
+// Zod schema for Stagehand extract() — paid pass
 // -----------------------------------------------------------------------------
 
 /**
- * Schema describing the extraction shape we ask Stagehand for. Using
- * `nullable()` rather than `optional()` because Stagehand's strict-mode
- * extraction sometimes fills missing fields with `null`. The instruction
- * string below tells the model to do exactly that.
- *
- * NOTE: prices and quantities come back as strings here (raw text from the
- * page); we coerce after extraction so we control rupiah parsing and date
- * normalization explicitly rather than relying on the LLM's number sense.
+ * Schema describing the extraction shape we ask Stagehand for. Mirror of the
+ * Tokopedia version: prices/dates come back as raw text so we can apply
+ * deterministic Shopee-specific parsers.
  */
 const RawLineItemSchema = z.object({
   marketplaceProductName: z.string(),
@@ -136,26 +162,36 @@ const ExtractSchema = z.object({
 
 type RawOrder = z.infer<typeof RawOrderSchema>;
 
-// -----------------------------------------------------------------------------
-// Public entry point
-// -----------------------------------------------------------------------------
-
 /**
- * Stagehand instruction text for the paid-orders extraction. Lifted into a
- * named constant so the processor / tests can log it and so the literal
- * matches what the report describes.
+ * Stagehand instruction text for the paid-orders extraction. Tailored to
+ * Shopee's UI vocabulary — Shopee labels the invoice as "Order ID" or
+ * "No. Pesanan", prices show with a `Rp` prefix and dot thousand separators
+ * (e.g. `Rp50.000`), and order dates may appear either as
+ * `2026-04-30 15:30` (ISO-like) or `30 April 2026` (full Indonesian month
+ * name). The model returns raw text so we can parse deterministically
+ * regardless of which date form Shopee currently renders.
  */
 const EXTRACT_INSTRUCTION = [
-  'Extract every visible order on this page.',
-  'Each order has an invoice number, an order date, a seller name (the shop name),',
-  'a list of products (with marketplace product name, product URL if shown, quantity,',
-  'unit price as text, subtotal as text), an optional shipping fee text, an optional',
-  'discount text, a total amount text, and an optional detail URL pointing to the',
-  '"Lihat Detail Transaksi" / order-detail page. Return prices and totals as the raw',
-  'visible text including the "Rp" prefix and any thousand separators (e.g. "Rp 50.000").',
-  'Return the order date as the raw visible text (e.g. "29 Apr 2026").',
-  'When a field is not present on the page, set it to null. Return an array of orders.',
+  'Extract every visible order on this page (Shopee buyer purchase list).',
+  'Each order has an invoice number — Shopee labels it as "Order ID" or',
+  '"No. Pesanan" depending on the locale; capture whichever string identifies',
+  'the order. Each order also has an order date, a seller name (the shop name),',
+  'a list of products (with marketplace product name, product URL if shown,',
+  'quantity, unit price as text, subtotal as text), an optional shipping fee',
+  'text, an optional discount text, a total amount text, and an optional',
+  'detail URL pointing to the order-detail page if a link is present.',
+  'Return prices and totals as the raw visible text including the "Rp" prefix',
+  'and dot thousand separators (e.g. "Rp50.000" or "Rp 50.000").',
+  'Return the order date as the raw visible text — Shopee may render it as',
+  '"2026-04-30 15:30" (ISO-like) or "30 April 2026" (full Indonesian month',
+  'name). Do not try to reformat — return exactly what is shown.',
+  'When a field is not present on the page, set it to null. Return an array',
+  'of orders.',
 ].join(' ');
+
+// -----------------------------------------------------------------------------
+// Public entry point — paid (to-ship) pass
+// -----------------------------------------------------------------------------
 
 export async function scrapePaid(
   stagehand: Stagehand,
@@ -181,7 +217,7 @@ export async function scrapePaid(
 
   log.info({ accountId, runId, url, modelUsed }, 'scrape-paid: starting');
 
-  // 1. Navigate
+  // 1. Navigate.
   const page = stagehand.page;
   try {
     await page.goto(url, {
@@ -197,16 +233,14 @@ export async function scrapePaid(
 
   // 2. Sanity check — did we land on the login page?
   const landedUrl = page.url();
-  if (
-    LOGIN_URL_SIGNALS.some((signal) => landedUrl.includes(signal))
-  ) {
+  if (SHOPEE_LOGIN_URL_SIGNALS.some((signal) => landedUrl.includes(signal))) {
     log.warn({ accountId, runId, landedUrl }, 'scrape-paid: redirected to login');
     throw new SessionExpiredError(landedUrl);
   }
 
   // 3. Capture a list-view screenshot. Used as the proof artifact for every
-  //    order on this run (see file header — per-order detail screenshots
-  //    are TODO).
+  //    order on this run (per-order detail screenshots are TODO — see file
+  //    header).
   await mkdir(screenshotDir, { recursive: true });
   const listScreenshotPath = path.join(screenshotDir, `${runId}-list.png`);
   try {
@@ -268,37 +302,53 @@ export async function scrapePaid(
 // Coercion helpers
 // -----------------------------------------------------------------------------
 
-/** Maps Indonesian month abbreviations + full names to month numbers (1–12). */
-const ID_MONTHS: Record<string, number> = {
-  jan: 1, januari: 1,
-  feb: 2, februari: 2,
-  mar: 3, maret: 3,
-  apr: 4, april: 4,
+/** Maps Indonesian full month names to month numbers (1–12). Shopee uses the
+ *  full localized form (`Januari`, `Februari`, …) more often than the
+ *  abbreviated form. We lowercase the captured token before lookup. */
+const ID_FULL_MONTHS: Record<string, number> = {
+  januari: 1,
+  februari: 2,
+  maret: 3,
+  april: 4,
   mei: 5,
-  jun: 6, juni: 6,
-  jul: 7, juli: 7,
-  agu: 8, agt: 8, agustus: 8, aug: 8,
-  sep: 9, september: 9, sept: 9,
-  okt: 10, oktober: 10, oct: 10,
-  nov: 11, november: 11,
-  des: 12, desember: 12, dec: 12,
+  juni: 6,
+  juli: 7,
+  agustus: 8,
+  september: 9,
+  oktober: 10,
+  november: 11,
+  desember: 12,
 };
 
 /**
- * Parses Indonesian-formatted dates like `29 Apr 2026` / `29 April 2026`
- * into an ISO `YYYY-MM-DD` string. Falls through to native Date parsing if
- * the input doesn't match the expected `D MMM YYYY` shape.
+ * Parses Shopee-formatted dates into an ISO `YYYY-MM-DD` string (UTC).
+ *
+ * Two-step strategy:
+ *   1. Try `new Date(s)` directly — handles ISO and ISO-like forms
+ *      (`2026-04-30T15:30:00`, `2026-04-30 15:30`).
+ *   2. Fall back to a regex match against `^(\d{1,2}) ([A-Za-z]+) (\d{4})$`
+ *      with the Indonesian full-month map (`30 April 2026`).
+ *
+ * Throws if neither path yields a finite date.
  */
-export function parseTokopediaDate(s: string): string {
+export function parseShopeeDate(s: string): string {
   const trimmed = s.trim();
 
-  // Try the explicit `D MMM YYYY` pattern first.
-  const m = trimmed.match(/^(\d{1,2})\s+([A-Za-z\.]+)\s+(\d{4})$/);
+  // Step 1: native Date parse — handles ISO, ISO-like, RFC 2822, etc. Note
+  // that Date interprets `YYYY-MM-DD HH:mm` as local time on most engines,
+  // which is fine for our day-precision output.
+  const direct = new Date(trimmed);
+  if (Number.isFinite(direct.getTime())) {
+    return formatYmdUtc(direct);
+  }
+
+  // Step 2: localized fallback — `30 April 2026`.
+  const m = trimmed.match(/^(\d{1,2})\s+([A-Za-z]+)\s+(\d{4})$/);
   if (m && m[1] && m[2] && m[3]) {
     const day = Number.parseInt(m[1], 10);
-    const monthKey = m[2].toLowerCase().replace(/\.+$/, '');
+    const monthKey = m[2].toLowerCase();
     const year = Number.parseInt(m[3], 10);
-    const month = ID_MONTHS[monthKey];
+    const month = ID_FULL_MONTHS[monthKey];
     if (month && Number.isFinite(day) && Number.isFinite(year)) {
       return `${year.toString().padStart(4, '0')}-${month
         .toString()
@@ -306,18 +356,17 @@ export function parseTokopediaDate(s: string): string {
     }
   }
 
-  // Fall back to native Date parsing — handles ISO strings, RFC 2822, etc.
-  const d = new Date(trimmed);
-  if (Number.isFinite(d.getTime())) {
-    const year = d.getUTCFullYear();
-    const month = d.getUTCMonth() + 1;
-    const day = d.getUTCDate();
-    return `${year.toString().padStart(4, '0')}-${month
-      .toString()
-      .padStart(2, '0')}-${day.toString().padStart(2, '0')}`;
-  }
+  throw new Error(`Could not parse Shopee date string: ${JSON.stringify(s)}`);
+}
 
-  throw new Error(`Could not parse Tokopedia date string: ${JSON.stringify(s)}`);
+/** Format a Date into `YYYY-MM-DD` using its UTC components. */
+function formatYmdUtc(d: Date): string {
+  const year = d.getUTCFullYear();
+  const month = d.getUTCMonth() + 1;
+  const day = d.getUTCDate();
+  return `${year.toString().padStart(4, '0')}-${month
+    .toString()
+    .padStart(2, '0')}-${day.toString().padStart(2, '0')}`;
 }
 
 function coerceOrder(raw: RawOrder, screenshotPath: string): ScrapedOrder {
@@ -325,7 +374,7 @@ function coerceOrder(raw: RawOrder, screenshotPath: string): ScrapedOrder {
     throw new Error('order is missing invoiceNumber');
   }
 
-  const orderDate = parseTokopediaDate(raw.orderDateText);
+  const orderDate = parseShopeeDate(raw.orderDateText);
 
   const lineItems: ScrapedLineItem[] = raw.lineItems.map((li, idx) => {
     const quantity = Number.parseInt(li.quantity.replace(/[^\d-]/g, ''), 10);
@@ -359,40 +408,28 @@ function coerceOrder(raw: RawOrder, screenshotPath: string): ScrapedOrder {
 }
 
 // -----------------------------------------------------------------------------
-// PASS B — Shipped (`dikirim`) scrape (C3b)
+// PASS B — Shipped (to-receive / in-transit) scrape
 //
 // Lighter schema than the paid pass — we only need `{ invoiceNumber,
 // detailUrl }` per order to drive the transition engine. The local DB
 // already has product/qty/price from the paid ingest; the shipped pass just
 // flips the lifecycle state and moves the kanban card.
-//
-// Type shapes (`ShippedOrder`, `ScrapeShippedOptions`, `ScrapeShippedResult`)
-// live in `_common.ts` and are re-exported above so callers can keep
-// importing from `tokopedia.js`.
 // -----------------------------------------------------------------------------
 
 /**
- * Default shipped-orders URL.
- *
- * PRD §7.4.2 / §18 OQ#1: this URL needs live verification. Operators can
- * override it per-account via `Account.shippedUrlOverride`. Mirrors the
- * paid-pass URL strategy (single source-of-truth string here, override per
- * account in the DB).
- */
-const DEFAULT_SHIPPED_URL =
-  'https://www.tokopedia.com/order-list?status=dikirim';
-
-/**
- * Stagehand instruction string for the shipped extraction. Lifted into a
- * named constant so the processor / tests can log it and the report
- * matches the literal sent to the model.
+ * Stagehand instruction string for the shipped extraction. Tailored to
+ * Shopee's UI vocabulary — Shopee labels the invoice as "Order ID" or
+ * "No. Pesanan"; the detail link is typically labelled "View Order Details"
+ * or "Lihat Detail Pesanan".
  */
 const SHIPPED_EXTRACT_INSTRUCTION = [
-  'List every visible shipped order on this page.',
-  'For each order, extract the invoice number',
-  "(often shown as 'INV/...' or similar) and the URL to its detail / tracking",
-  'page if a link is present.',
-  'Set fields not visible to null.',
+  'List every visible shipped order on this page (Shopee buyer "to receive"',
+  'or "in transit" tab). For each order, extract the invoice number — Shopee',
+  'labels it as "Order ID" or "No. Pesanan" depending on the locale; capture',
+  'whichever string identifies the order. Also extract the URL to its detail',
+  '/ tracking page if a link is present (Shopee usually labels it as "View',
+  'Order Details" or "Lihat Detail Pesanan"). Return prices and dates as raw',
+  'text if any are present. Set fields not visible to null.',
 ].join(' ');
 
 const RawShippedOrderSchema = z.object({
@@ -444,7 +481,7 @@ export async function scrapeShipped(
 
   // 2. Login-redirect detection — same signals as the paid pass.
   const landedUrl = page.url();
-  if (LOGIN_URL_SIGNALS.some((signal) => landedUrl.includes(signal))) {
+  if (SHOPEE_LOGIN_URL_SIGNALS.some((signal) => landedUrl.includes(signal))) {
     log.warn(
       { accountId, runId, landedUrl },
       'scrape-shipped: redirected to login',
@@ -453,8 +490,8 @@ export async function scrapeShipped(
   }
 
   // 3. Capture a list-view screenshot. Used as the proof artifact for every
-  //    transition on this run (per-order detail screenshots are deferred —
-  //    see file header).
+  //    transition on this run (per-order detail screenshots are TODO — see
+  //    file header).
   await mkdir(screenshotDir, { recursive: true });
   const listScreenshotPath = path.join(
     screenshotDir,
@@ -517,6 +554,10 @@ export async function scrapeShipped(
 // Exposed for tests.
 export const __testing = {
   coerceOrder,
+  parseShopeeDate,
   EXTRACT_INSTRUCTION,
   SHIPPED_EXTRACT_INSTRUCTION,
+  SHOPEE_LOGIN_URL_SIGNALS,
+  DEFAULT_PAID_URL,
+  DEFAULT_SHIPPED_URL,
 };
