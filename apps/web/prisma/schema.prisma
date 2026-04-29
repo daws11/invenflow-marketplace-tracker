@@ -65,8 +65,11 @@ model Account {
   invenflowKanbanName   String
   columnOnPaid          String
   columnOnShipped       String
-  /// FK to ServiceToken (sidecar-local reference; see file header).
-  invenflowAuthTokenRef String
+  /// Optional FK to a per-account ServiceToken override. NULL means the
+  /// account uses the global default service token from Settings (see file
+  /// header). Per-account overrides are out of scope for v1; the column
+  /// stays so we can add UI later without another migration.
+  invenflowAuthTokenRef String?
   paidUrlOverride       String?
   shippedUrlOverride    String?
 
