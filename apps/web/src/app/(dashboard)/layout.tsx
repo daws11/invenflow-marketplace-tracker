@@ -17,6 +17,7 @@ import type { ReactNode } from 'react';
 import { getCurrentUser } from '@/lib/auth';
 
 import { SidebarNav } from './_sidebar-nav';
+import { SignOutButton } from './_signout-button';
 
 export default async function DashboardLayout({
   children,
@@ -44,6 +45,7 @@ export default async function DashboardLayout({
           <div className="truncate font-medium text-neutral-700">
             {user.email}
           </div>
+          <SignOutButton />
         </div>
       </aside>
       <div className="flex-1">{children}</div>
