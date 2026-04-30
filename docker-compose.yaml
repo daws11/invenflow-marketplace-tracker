@@ -1,15 +1,19 @@
 # =============================================================================
 # Production compose stack for Coolify deployment at tracker.ptunicorn.id.
 #
-# Differences from docker-compose.yml (local dev):
+# Differences from compose.dev.yaml (local dev):
 #   - No `caddy`        — Coolify Traefik handles SSL + reverse proxy.
 #   - No `postgres`     — Coolify managed database (tracker-postgres-production).
 #   - No `redis`        — Coolify managed database (tracker-redis-production).
 #   - Per-service Traefik labels for routing.
+#   - `coolify` external network attached to web + worker so they can reach
+#     the managed Postgres / Redis (which live on Coolify's shared network).
+#     Without this the app couldn't resolve the DB hostname and start-prod.sh
+#     would crash with `P1001: Can't reach database server`.
 #
 # Coolify injects environment variables from the application's env-var config;
 # DATABASE_URL and REDIS_URL point at the internal hostnames of the managed
-# databases (e.g. tracker-postgres-production.coolify:5432).
+# databases on the `coolify` network.
 # =============================================================================
 
 services:
@@ -38,19 +42,19 @@ services:
       - FONNTE_TOKEN=${FONNTE_TOKEN:-}
       - ADMIN_WA_NUMBER=${ADMIN_WA_NUMBER:-}
       - NODE_ENV=production
-    # DEBUG MODE STEP 3: even sleep infinity + 512m crashed (7 restarts in 13s)
-    # which is impossible under normal docker semantics. Strip everything that
-    # could plausibly trigger a kill: drop mem_limit (in case docker rejected
-    # the cgroup config silently), run as root (in case nextjs user can't
-    # exec /usr/bin/sleep for some reason), and explicitly disable the
-    # image-baked HEALTHCHECK (which would otherwise mark unhealthy and
-    # Coolify might treat that as a restart trigger).
-    command: ["sleep", "infinity"]
-    user: "0"
-    healthcheck:
-      disable: true
     expose:
       - "3000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    # Both networks: the per-app one (default, for inter-service traffic) and
+    # `coolify` (for managed Postgres/Redis access).
+    networks:
+      - default
+      - coolify
     labels:
       - traefik.enable=true
       # HTTPS router — main app
@@ -85,11 +89,9 @@ services:
       - PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
     volumes:
       - tracker_profiles:/data/profiles
-    # DEBUG: keep idle while we work out the web container.
-    command: ["sleep", "infinity"]
-    user: "0"
-    healthcheck:
-      disable: true
+    networks:
+      - default
+      - coolify
     # No Traefik labels — worker speaks only over the internal docker network.
     # The web app reaches the worker queue via Redis; nothing reaches the
     # worker's HTTP/VNC ports from outside the compose network.
@@ -109,6 +111,7 @@ services:
       - "6080"
     depends_on:
       - worker
+    # novnc only needs to reach `worker` over the per-app network.
     labels:
       - traefik.enable=true
       # Static-asset router — strips /novnc so vnc.html and friends resolve.
@@ -132,3 +135,11 @@ services:
 
 volumes:
   tracker_profiles:
+
+networks:
+  # Per-app network (created by Coolify automatically as the default).
+  default: {}
+  # Coolify's shared network where managed Postgres/Redis live.
+  coolify:
+    external: true
+    name: coolify
