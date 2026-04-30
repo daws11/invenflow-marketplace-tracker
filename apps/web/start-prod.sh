@@ -2,25 +2,33 @@
 # Production entrypoint for the Next.js web container.
 #
 # Runs `prisma migrate deploy` against the configured DATABASE_URL before
-# starting the server. This keeps Coolify deploys self-applying — schema
-# changes land automatically when the new image rolls out, and a failed
-# migration crashes the container so Coolify retries / surfaces the error
-# rather than serving a stale schema.
+# starting the server. Keeps Coolify deploys self-applying.
 #
-# Idempotent: prisma migrate deploy is safe to re-run after every restart.
-set -e
+# On any failure we drop into `tail -f /dev/null` rather than exiting so
+# the container stays "running" long enough for Coolify's logs panel to
+# expose the error. (Default behaviour is `set -e`-based exit, which puts
+# the container into a fast restart loop; Coolify only streams logs when
+# the container is in `running` state, so a fast restarter is invisible.)
 
-echo "[start-prod] applying prisma migrations..."
+set -x
+
 cd /app/apps/web
-prisma migrate deploy --schema=./prisma/schema.prisma
 
-# Seed runs after migrate so first boot creates the initial admin + setting
-# rows from INITIAL_* env vars. Idempotent — re-runs skip when records
-# already exist. seed.js is plain CommonJS (no tsx/ts-node needed) so it
-# works with just the standalone bundle's runtime deps.
-echo "[start-prod] running prisma seed..."
-node /app/apps/web/prisma/seed.js
+echo "[start-prod] [1/3] prisma migrate deploy..."
+if ! prisma migrate deploy --schema=./prisma/schema.prisma; then
+  echo "[start-prod] FATAL: prisma migrate deploy failed - keeping container alive for log inspection"
+  exec tail -f /dev/null
+fi
 
-echo "[start-prod] migrations + seed complete; starting next.js server"
+echo "[start-prod] [2/3] prisma seed..."
+if ! node /app/apps/web/prisma/seed.js; then
+  echo "[start-prod] FATAL: seed failed - keeping container alive for log inspection"
+  exec tail -f /dev/null
+fi
+
+echo "[start-prod] [3/3] starting next.js server"
 cd /app
-exec node apps/web/server.js
+node apps/web/server.js
+SERVER_EXIT=$?
+echo "[start-prod] FATAL: next.js server exited with code $SERVER_EXIT - keeping container alive for log inspection"
+exec tail -f /dev/null
