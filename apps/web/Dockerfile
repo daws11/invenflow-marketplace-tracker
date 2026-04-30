@@ -74,6 +74,17 @@ COPY --from=builder --chown=nextjs:nodejs /repo/apps/web/public ./apps/web/publi
 # in by default since no app code imports them at runtime.
 COPY --from=builder --chown=nextjs:nodejs /repo/apps/web/prisma ./apps/web/prisma
 
+# bcryptjs is required by prisma/seed.js (admin password hashing) and by
+# NextAuth's credentials provider. The Next.js standalone trace doesn't
+# reliably pick it up across pnpm symlinks, so copy the resolved package
+# directly into the standalone bundle's node_modules. This is a tiny
+# pure-JS module (~50KB) so the image cost is negligible.
+# pnpm keeps the actual files under .pnpm/ — copy from there so we
+# don't try to follow a symlink.
+COPY --from=builder --chown=nextjs:nodejs \
+    /repo/node_modules/.pnpm/bcryptjs@2.4.3/node_modules/bcryptjs \
+    ./node_modules/bcryptjs
+
 # Wrapper entrypoint: runs migrations, then execs the Next.js server.
 COPY --chown=nextjs:nodejs apps/web/start-prod.sh /app/start-prod.sh
 RUN chmod +x /app/start-prod.sh

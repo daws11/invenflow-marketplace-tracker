@@ -20,6 +20,18 @@ const nextConfig = {
       // session/CSRF protection is handled at the auth layer.
       allowedOrigins: ['*'],
     },
+    // The standalone trace doesn't reliably pick up bcryptjs through
+    // NextAuth's credentials provider (it's resolved via dynamic require)
+    // and prisma/seed.js is invoked by start-prod.sh OUTSIDE Next.js, so
+    // its requires don't show up in the trace at all. Force-include both
+    // the package itself and the prisma binary so the runtime container
+    // has everything seed.js + the auth route need.
+    outputFileTracingIncludes: {
+      '*': [
+        './node_modules/bcryptjs/**/*',
+        '../../node_modules/bcryptjs/**/*',
+      ],
+    },
   },
 };
 
