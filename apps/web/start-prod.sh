@@ -14,6 +14,13 @@ echo "[start-prod] applying prisma migrations..."
 cd /app/apps/web
 prisma migrate deploy --schema=./prisma/schema.prisma
 
-echo "[start-prod] migrations complete; starting next.js server"
+# Seed runs after migrate so first boot creates the initial admin + setting
+# rows from INITIAL_* env vars. Idempotent — re-runs skip when records
+# already exist. seed.js is plain CommonJS (no tsx/ts-node needed) so it
+# works with just the standalone bundle's runtime deps.
+echo "[start-prod] running prisma seed..."
+node /app/apps/web/prisma/seed.js
+
+echo "[start-prod] migrations + seed complete; starting next.js server"
 cd /app
 exec node apps/web/server.js
