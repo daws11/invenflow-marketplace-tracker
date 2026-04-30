@@ -4,7 +4,15 @@
 # pins versions so they always match the bundled browser. We just layer the X
 # stack (Xvfb / x11vnc / fluxbox) on top so the worker can drive a *headed*
 # Chromium that x11vnc can mirror — see PRD §7.3.
-FROM mcr.microsoft.com/playwright:v1.48.0-noble
+#
+# Image tag MUST match whichever Playwright version pnpm actually resolves
+# inside the workspace — otherwise the Node-side code looks for a Chromium
+# build the image doesn't ship and Stagehand fails with:
+#   "Executable doesn't exist at /ms-playwright/chromium-1217/..."
+# We don't have a frozen lockfile yet (pnpm install --frozen-lockfile=false
+# in the deps stage), and Stagehand 1.14 peer-resolves @playwright/test@1.59.1,
+# so the actual installed Playwright is 1.59.1. Track that here.
+FROM mcr.microsoft.com/playwright:v1.59.1-noble
 
 # Note: NODE_ENV is intentionally NOT set here. pnpm skips devDependencies
 # (including typescript) when NODE_ENV=production at install time, which

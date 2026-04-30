@@ -14,7 +14,7 @@
     "bullmq": "^5.21.0",
     "ioredis": "^5.4.1",
     "pino": "^9.5.0",
-    "playwright": "1.48.0",
+    "playwright": "1.59.1",
     "playwright-extra": "^4.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "zod": "^3.23.8"
