@@ -22,8 +22,11 @@ RUN apt-get update \
 
 RUN git clone --depth 1 --branch v${NOVNC_VERSION} \
         https://github.com/novnc/noVNC ${NOVNC_HOME} \
-    && git clone --depth 1 --branch v${WEBSOCKIFY_VERSION} \
-        https://github.com/novnc/websockify ${NOVNC_HOME}/utils/websockify \
+    # Install websockify as a proper Python package so we can invoke it via
+    # `websockify` CLI (the cloned `utils/websockify/run` is a bash launcher,
+    # not a Python entrypoint — earlier ENTRYPOINT calling `python3 run`
+    # crashed with `SyntaxError: invalid syntax` on the bash `cd` line).
+    && pip install --no-cache-dir "websockify==${WEBSOCKIFY_VERSION}" \
     # Conventional landing page so /vnc.html works directly without query args.
     && ln -s ${NOVNC_HOME}/vnc.html ${NOVNC_HOME}/index.html
 
@@ -35,7 +38,7 @@ EXPOSE 6080
 # so a single container handles both the HTTP and the WebSocket sides. The
 # `worker` hostname resolves over the internal Docker network defined in
 # docker-compose.yml.
-ENTRYPOINT ["python3", "-u", "/opt/novnc/utils/websockify/run", \
+ENTRYPOINT ["websockify", \
             "--web=/opt/novnc", \
             "0.0.0.0:6080", \
             "worker:5900"]
