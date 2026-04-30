@@ -18,11 +18,7 @@ import { useState } from 'react';
 
 import type { AccountStatus, Platform } from '@prisma/client';
 
-import {
-  CronCellChip,
-  PlatformBadge,
-  StatusBadge,
-} from './_account-helpers';
+import { CronCell, PlatformBadge, StatusBadge } from './_account-helpers';
 
 export interface AccountRow {
   id: string;
@@ -143,12 +139,11 @@ export function AccountListClient({ accounts }: { accounts: AccountRow[] }) {
                     </span>
                   </td>
                   <td className="px-4 py-3">
-                    <div className="flex flex-col gap-1">
-                      <CronCellChip enabled={row.cronEnabled} />
-                      <span className="font-mono text-xs text-neutral-500">
-                        {row.cronScheduleDibayar} / {row.cronScheduleDikirim}
-                      </span>
-                    </div>
+                    <CronCell
+                      enabled={row.cronEnabled}
+                      paid={row.cronScheduleDibayar}
+                      shipped={row.cronScheduleDikirim}
+                    />
                   </td>
                   <td className="px-4 py-3 text-right">
                     <div className="flex justify-end gap-2">

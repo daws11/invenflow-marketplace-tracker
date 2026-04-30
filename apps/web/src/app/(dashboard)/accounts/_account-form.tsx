@@ -32,6 +32,14 @@ import { FieldGroup } from './_account-helpers';
 
 import type { Platform } from '@prisma/client';
 
+import {
+  buildCron,
+  cronToHuman,
+  formatTime,
+  parseCron,
+  type SchedulePreset,
+} from '@/lib/cron-format';
+
 const PLATFORMS: { value: Platform; label: string }[] = [
   { value: 'TOKOPEDIA', label: 'Tokopedia' },
   { value: 'SHOPEE', label: 'Shopee' },
@@ -127,6 +135,72 @@ export function AccountForm({
   const [banner, setBanner] = useState<
     { kind: 'success' | 'error'; msg: string } | null
   >(null);
+
+  // ---------------------------------------------------------------------------
+  // Schedule UI state.
+  //
+  // The two cron strings are still the source of truth in the form payload
+  // (and in the DB), but the operator interacts with a friendlier UI: pick a
+  // frequency preset + two times. Whenever those change we rebuild the cron
+  // expressions and write them back into `values`. "Custom" exposes raw cron
+  // inputs as a fallback for power-users who need a pattern outside the
+  // recognised presets.
+  // ---------------------------------------------------------------------------
+
+  const [preset, setPreset] = useState<SchedulePreset>(() => {
+    const a = parseCron(initialValues?.cronScheduleDibayar ?? FALLBACK_CRON_DIBAYAR);
+    const b = parseCron(initialValues?.cronScheduleDikirim ?? FALLBACK_CRON_DIKIRIM);
+    if (a && b && a.preset === b.preset && a.preset !== 'custom') {
+      return a.preset;
+    }
+    return 'custom';
+  });
+  const [paidTime, setPaidTime] = useState<{ hour: number; minute: number }>(
+    () => {
+      const a = parseCron(initialValues?.cronScheduleDibayar ?? FALLBACK_CRON_DIBAYAR);
+      return a ? { hour: a.hour, minute: a.minute } : { hour: 10, minute: 0 };
+    },
+  );
+  const [shippedTime, setShippedTime] = useState<{
+    hour: number;
+    minute: number;
+  }>(() => {
+    const b = parseCron(initialValues?.cronScheduleDikirim ?? FALLBACK_CRON_DIKIRIM);
+    return b ? { hour: b.hour, minute: b.minute } : { hour: 14, minute: 0 };
+  });
+
+  // When the operator picks a preset (other than custom) or changes a time,
+  // rebuild the cron expressions in form state. We don't run this for the
+  // "custom" preset — there the text inputs write directly to `values`.
+  useEffect(() => {
+    if (preset === 'custom') return;
+    setValues((v) => ({
+      ...v,
+      cronScheduleDibayar: buildCron({ preset, ...paidTime }),
+      cronScheduleDikirim: buildCron({ preset, ...shippedTime }),
+    }));
+  }, [preset, paidTime, shippedTime]);
+
+  // If /api/settings (create-mode) overwrites the cron strings AFTER mount,
+  // refresh the preset/time state to match. Triggers on string changes only.
+  // Guarded against ping-pong with the build-cron effect above: we only
+  // call set* when the parsed value actually differs from current state,
+  // so React's structural equality check on primitive deps stops the loop.
+  useEffect(() => {
+    const a = parseCron(values.cronScheduleDibayar);
+    const b = parseCron(values.cronScheduleDikirim);
+    if (!(a && b && a.preset === b.preset && a.preset !== 'custom')) return;
+    if (preset !== a.preset) setPreset(a.preset);
+    if (paidTime.hour !== a.hour || paidTime.minute !== a.minute) {
+      setPaidTime({ hour: a.hour, minute: a.minute });
+    }
+    if (shippedTime.hour !== b.hour || shippedTime.minute !== b.minute) {
+      setShippedTime({ hour: b.hour, minute: b.minute });
+    }
+    // Reading preset/paidTime/shippedTime here is a guard, not a dependency —
+    // we only want to react to STRING changes. eslint disabled accordingly.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [values.cronScheduleDibayar, values.cronScheduleDikirim]);
 
   // ---------------------------------------------------------------------------
   // Initial loads: kanbans + (in create mode) the cron defaults from Settings.
@@ -449,57 +523,142 @@ export function AccountForm({
       </section>
 
       <section className="space-y-4 rounded-lg border border-neutral-200 bg-white p-6 shadow-sm">
-        <h2 className="text-base font-semibold text-neutral-900">
-          3. Schedule
-        </h2>
-
-        <label className="flex items-center gap-2 text-sm text-neutral-700">
-          <input
-            type="checkbox"
-            checked={values.cronEnabled}
-            onChange={(e) =>
-              setValues((v) => ({ ...v, cronEnabled: e.target.checked }))
-            }
-            className="h-4 w-4 rounded border-neutral-300 text-neutral-900 focus:ring-neutral-500"
-          />
-          Run on a schedule
-        </label>
-
-        <div className="grid gap-4 md:grid-cols-2">
-          <FieldGroup
-            label="Cron — paid (dibayar)"
-            hint="Cron expression. Example: 0 10 * * 1-5 (10am Mon–Fri)."
-          >
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 className="text-base font-semibold text-neutral-900">
+            3. Schedule
+          </h2>
+          <label className="flex items-center gap-2 text-sm text-neutral-700">
             <input
-              type="text"
-              value={values.cronScheduleDibayar}
+              type="checkbox"
+              checked={values.cronEnabled}
               onChange={(e) =>
-                setValues((v) => ({
-                  ...v,
-                  cronScheduleDibayar: e.target.value,
-                }))
+                setValues((v) => ({ ...v, cronEnabled: e.target.checked }))
               }
-              className={inputClass}
+              className="h-4 w-4 rounded border-neutral-300 text-neutral-900 focus:ring-neutral-500"
             />
-          </FieldGroup>
-
-          <FieldGroup
-            label="Cron — shipped (dikirim)"
-            hint="Cron expression. Example: 0 14 * * 1-5 (2pm Mon–Fri)."
-          >
-            <input
-              type="text"
-              value={values.cronScheduleDikirim}
-              onChange={(e) =>
-                setValues((v) => ({
-                  ...v,
-                  cronScheduleDikirim: e.target.value,
-                }))
-              }
-              className={inputClass}
-            />
-          </FieldGroup>
+            Run on a schedule
+          </label>
         </div>
+
+        {!values.cronEnabled ? (
+          <p className="rounded-md border border-dashed border-neutral-300 bg-neutral-50 px-3 py-2 text-sm text-neutral-600">
+            Scheduled scrapes are paused for this account. You can still ingest
+            orders manually via Open Browser or the Run buttons on the dashboard.
+          </p>
+        ) : (
+          <>
+            <FieldGroup
+              label="Frequency"
+              hint="Choose when scrapes should run. Times are in Asia/Jakarta."
+            >
+              <select
+                value={preset}
+                onChange={(e) =>
+                  setPreset(e.target.value as SchedulePreset)
+                }
+                className={inputClass}
+              >
+                <option value="weekdays">Weekdays (Mon–Fri)</option>
+                <option value="daily">Every day</option>
+                <option value="weekends">Weekends (Sat–Sun)</option>
+                <option value="custom">Custom (advanced)</option>
+              </select>
+            </FieldGroup>
+
+            {preset === 'custom' ? (
+              <div className="grid gap-4 md:grid-cols-2">
+                <FieldGroup
+                  label="Paid (dibayar) cron"
+                  hint="5-field cron, e.g. 0 10 * * 1-5 (10:00 Mon–Fri)."
+                >
+                  <input
+                    type="text"
+                    value={values.cronScheduleDibayar}
+                    onChange={(e) =>
+                      setValues((v) => ({
+                        ...v,
+                        cronScheduleDibayar: e.target.value,
+                      }))
+                    }
+                    className={`${inputClass} font-mono`}
+                  />
+                </FieldGroup>
+                <FieldGroup
+                  label="Shipped (dikirim) cron"
+                  hint="5-field cron, e.g. 0 14 * * 1-5 (14:00 Mon–Fri)."
+                >
+                  <input
+                    type="text"
+                    value={values.cronScheduleDikirim}
+                    onChange={(e) =>
+                      setValues((v) => ({
+                        ...v,
+                        cronScheduleDikirim: e.target.value,
+                      }))
+                    }
+                    className={`${inputClass} font-mono`}
+                  />
+                </FieldGroup>
+              </div>
+            ) : (
+              <div className="grid gap-4 md:grid-cols-2">
+                <FieldGroup
+                  label="Paid scrape time"
+                  hint="When to ingest newly-paid orders (status=Dibayar)."
+                >
+                  <input
+                    type="time"
+                    value={formatTime(paidTime.hour, paidTime.minute)}
+                    onChange={(e) => {
+                      const [h, m] = e.target.value.split(':').map(Number);
+                      if (Number.isFinite(h) && Number.isFinite(m)) {
+                        setPaidTime({ hour: h, minute: m });
+                      }
+                    }}
+                    className={inputClass}
+                  />
+                </FieldGroup>
+                <FieldGroup
+                  label="Shipped scrape time"
+                  hint="When to mark cards as shipped (status=Dikirim)."
+                >
+                  <input
+                    type="time"
+                    value={formatTime(shippedTime.hour, shippedTime.minute)}
+                    onChange={(e) => {
+                      const [h, m] = e.target.value.split(':').map(Number);
+                      if (Number.isFinite(h) && Number.isFinite(m)) {
+                        setShippedTime({ hour: h, minute: m });
+                      }
+                    }}
+                    className={inputClass}
+                  />
+                </FieldGroup>
+              </div>
+            )}
+
+            <div className="rounded-md bg-neutral-50 px-3 py-2 text-xs text-neutral-700">
+              <p>
+                <span className="font-medium">Paid:</span>{' '}
+                {cronToHuman(values.cronScheduleDibayar)}
+              </p>
+              <p>
+                <span className="font-medium">Shipped:</span>{' '}
+                {cronToHuman(values.cronScheduleDikirim)}
+              </p>
+              <p className="mt-1 text-[11px] text-neutral-500">
+                Asia/Jakarta · cron:{' '}
+                <span className="font-mono">
+                  {values.cronScheduleDibayar}
+                </span>{' '}
+                /{' '}
+                <span className="font-mono">
+                  {values.cronScheduleDikirim}
+                </span>
+              </p>
+            </div>
+          </>
+        )}
       </section>
 
       <section className="rounded-lg border border-neutral-200 bg-white p-6 shadow-sm">
