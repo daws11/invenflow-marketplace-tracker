@@ -38,14 +38,38 @@ services:
       - FONNTE_TOKEN=${FONNTE_TOKEN:-}
       - ADMIN_WA_NUMBER=${ADMIN_WA_NUMBER:-}
       - NODE_ENV=production
+    # DEBUG MODE: wrap the entrypoint so we capture its exit code AND keep
+    # the container alive on any failure path. The image's CMD points at
+    # /app/start-prod.sh which itself traps failures, but the container
+    # has been crash-looping in production for reasons that don't show up
+    # in Coolify's log panel (it only streams logs while the container is
+    # in `running` state). This wrapper guarantees the shell stays in the
+    # foreground regardless of what start-prod.sh does.
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set +e
+        echo "[wrapper] container started at $$(date -Iseconds)"
+        echo "[wrapper] whoami=$$(whoami) pwd=$$(pwd)"
+        echo "[wrapper] which prisma=$$(which prisma 2>&1 || echo NOTFOUND)"
+        echo "[wrapper] ls -la /app/start-prod.sh:"
+        ls -la /app/start-prod.sh 2>&1 || echo "[wrapper] /app/start-prod.sh not found"
+        echo "[wrapper] running /app/start-prod.sh ..."
+        /app/start-prod.sh
+        SCRIPT_EXIT=$$?
+        echo "[wrapper] /app/start-prod.sh returned $$SCRIPT_EXIT"
+        echo "[wrapper] keeping container alive — exec tail -f /dev/null"
+        exec tail -f /dev/null
     expose:
       - "3000"
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost:3000/api/health || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 3
-      start_period: 60s
+    # Healthcheck disabled while debugging; re-enable once the app stays up.
+    # healthcheck:
+    #   test: ["CMD-SHELL", "curl -fsS http://localhost:3000/api/health || exit 1"]
+    #   interval: 30s
+    #   timeout: 5s
+    #   retries: 3
+    #   start_period: 60s
     labels:
       - traefik.enable=true
       # HTTPS router — main app
