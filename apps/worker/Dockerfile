@@ -6,7 +6,10 @@
 # Chromium that x11vnc can mirror — see PRD §7.3.
 FROM mcr.microsoft.com/playwright:v1.48.0-noble
 
-ENV NODE_ENV=production
+# Note: NODE_ENV is intentionally NOT set here. pnpm skips devDependencies
+# (including typescript) when NODE_ENV=production at install time, which
+# breaks `tsc -p tsconfig.json`. We set NODE_ENV=production at the end of
+# this Dockerfile, after the build step has run.
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV PNPM_HOME=/usr/local/pnpm
 ENV PATH=$PNPM_HOME:$PATH
@@ -50,6 +53,7 @@ RUN mkdir -p /data/profiles /tmp/screenshots \
     && chmod 0700 /data/profiles
 
 ENV DISPLAY=:99
+ENV NODE_ENV=production
 EXPOSE 5900
 
 ENTRYPOINT ["./start.sh"]
