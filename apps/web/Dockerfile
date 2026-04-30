@@ -31,6 +31,12 @@ COPY --from=deps /repo/apps/worker/node_modules ./apps/worker/node_modules
 COPY --from=deps /repo/packages/shared/node_modules ./packages/shared/node_modules
 COPY . .
 
+# Generate the Prisma client BEFORE `next build`. Next.js type-checks
+# during the production build, so `@prisma/client` must have the
+# schema-specific Account / Run / OrderLineItem etc. types — those only
+# appear after `prisma generate` rewrites node_modules/.prisma/client.
+RUN pnpm --filter @invenflow-tracker/web exec prisma generate
+
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN pnpm --filter @invenflow-tracker/web build
 

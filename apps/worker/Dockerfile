@@ -42,6 +42,16 @@ RUN pnpm install --frozen-lockfile=false
 
 # Copy the rest of the workspace and build the worker.
 COPY . .
+
+# Generate the Prisma client BEFORE the TS build. Without this step the
+# imported Account / Run / RunPass / OrderLineItem types from
+# `@prisma/client` aren't materialised — the package ships with empty
+# default types and only gets schema-specific types after `prisma generate`
+# runs. The schema lives in apps/web/prisma so we invoke it via the web
+# workspace's prisma devDep (now installed thanks to NODE_ENV being unset
+# during install).
+RUN pnpm --filter @invenflow-tracker/web exec prisma generate
+
 RUN pnpm --filter @invenflow-tracker/worker build
 
 # Run the worker out of its own directory so relative paths in start.sh
