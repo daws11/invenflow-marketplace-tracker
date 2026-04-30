@@ -57,6 +57,12 @@ services:
       - coolify
     labels:
       - traefik.enable=true
+      # Web is attached to multiple docker networks (default + coolify)
+      # so Traefik must be told explicitly which one to use to reach the
+      # backend. Without this it sometimes picks the wrong network IP and
+      # times out (Cloudflare returns 504). Coolify Traefik lives on the
+      # `coolify` network; that's where we route from.
+      - traefik.docker.network=coolify
       # HTTPS router — main app
       - traefik.http.routers.tracker-web.rule=Host(`tracker.ptunicorn.id`)
       - traefik.http.routers.tracker-web.entrypoints=https
@@ -111,9 +117,15 @@ services:
       - "6080"
     depends_on:
       - worker
-    # novnc only needs to reach `worker` over the per-app network.
+    # novnc talks to `worker` over the per-app network and is reached BY
+    # Traefik over the shared `coolify` network — needs both.
+    networks:
+      - default
+      - coolify
     labels:
       - traefik.enable=true
+      # See web service comment — same multi-network gotcha.
+      - traefik.docker.network=coolify
       # Static-asset router — strips /novnc so vnc.html and friends resolve.
       - traefik.http.routers.tracker-novnc-static.rule=Host(`tracker.ptunicorn.id`) && PathPrefix(`/novnc`)
       - traefik.http.routers.tracker-novnc-static.entrypoints=https
