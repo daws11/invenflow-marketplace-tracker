@@ -56,7 +56,7 @@ cp .env.example .env
 
 # 4. Boot the stack. The web container will run Prisma migrations and seed the
 #    initial admin user on first start.
-docker compose up -d
+docker compose -f compose.dev.yaml up -d
 
 # 5. Visit https://${DOMAIN}, log in with INITIAL_ADMIN_EMAIL / INITIAL_ADMIN_PASSWORD,
 #    and immediately change the admin password.
@@ -77,9 +77,13 @@ docker compose up -d
 
 ## Running locally with Docker Compose
 
+The local-dev compose lives at `compose.dev.yaml` (separate from the production
+`docker-compose.yaml` which is wired for Coolify). Always pass `-f` so you don't
+accidentally run the production stack:
+
 ```bash
 cp .env.example .env       # set DOMAIN=localhost for plain HTTP on :80
-docker compose up --build
+docker compose -f compose.dev.yaml up --build
 # Web UI:  http://localhost/
 # Health:  http://localhost/api/health
 # noVNC:   http://localhost/novnc/vnc.html
@@ -88,8 +92,8 @@ docker compose up --build
 Stop / clean up:
 
 ```bash
-docker compose down              # stop, keep volumes
-docker compose down -v           # stop and DROP postgres + redis volumes
+docker compose -f compose.dev.yaml down              # stop, keep volumes
+docker compose -f compose.dev.yaml down -v           # stop and DROP postgres + redis volumes
 ```
 
 ---
@@ -110,9 +114,9 @@ The Next.js app boots on http://localhost:3000 and the worker connects directly 
 
 ## Production deployment (Coolify)
 
-The production target is `https://tracker.ptunicorn.id`, deployed via Coolify on the "Main Production VPS" using the **Docker Compose** build pack with [`docker-compose.coolify.yml`](./docker-compose.coolify.yml).
+The production target is `https://tracker.ptunicorn.id`, deployed via Coolify on the "Main Production VPS" using the **Docker Compose** build pack with [`docker-compose.yaml`](./docker-compose.yaml) (Coolify's default discovery path).
 
-That compose file diverges from `docker-compose.yml` in three ways:
+That compose file diverges from the local-dev `compose.dev.yaml` in three ways:
 
 1. **No `caddy`** — Coolify's Traefik handles SSL + reverse proxy.
 2. **No `postgres` / `redis`** — Coolify manages these as standalone databases (`tracker-postgres-production` and `tracker-redis-production`).
@@ -185,7 +189,8 @@ invenflow-marketplace-tracker/
 │   ├── novnc/      # Dockerfile for the noVNC web client
 │   └── caddy/      # Caddyfile — reverse proxy + auto HTTPS
 ├── data/           # Bind-mount targets (postgres, redis, profiles) — gitignored
-├── docker-compose.yml
+├── docker-compose.yaml      # production stack (Coolify deployment target)
+├── compose.dev.yaml         # local full-stack dev (caddy + postgres + redis bundled)
 ├── .env.example
 └── README.md
 ```
