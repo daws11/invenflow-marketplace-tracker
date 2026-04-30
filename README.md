@@ -108,6 +108,68 @@ The Next.js app boots on http://localhost:3000 and the worker connects directly 
 
 ---
 
+## Production deployment (Coolify)
+
+The production target is `https://tracker.ptunicorn.id`, deployed via Coolify on the "Main Production VPS" using the **Docker Compose** build pack with [`docker-compose.coolify.yml`](./docker-compose.coolify.yml).
+
+That compose file diverges from `docker-compose.yml` in three ways:
+
+1. **No `caddy`** — Coolify's Traefik handles SSL + reverse proxy.
+2. **No `postgres` / `redis`** — Coolify manages these as standalone databases (`tracker-postgres-production` and `tracker-redis-production`).
+3. **Per-service Traefik labels** route `/`, `/api/*` to `web`, and `/novnc/*` (with prefix stripping) and `/websockify` (no strip) to `novnc`.
+
+### Environment variables
+
+Configure these in the Coolify application's env-var panel:
+
+| Key | Notes |
+|---|---|
+| `DATABASE_URL` | Internal connection string from the managed Postgres |
+| `REDIS_URL` | Internal connection string from the managed Redis |
+| `NEXTAUTH_URL` | `https://tracker.ptunicorn.id` |
+| `NEXTAUTH_SECRET` | `openssl rand -base64 32` |
+| `ENCRYPTION_KEY` | `openssl rand -base64 32` |
+| `APP_URL` | `https://tracker.ptunicorn.id` |
+| `INITIAL_ADMIN_EMAIL` | Operator email — used to seed the first admin |
+| `INITIAL_ADMIN_PASSWORD` | Strong temporary password — change on first login |
+| `INVENFLOW_BASE_URL` | `https://inventory.ptunicorn.id` |
+| `INVENFLOW_INITIAL_SERVICE_TOKEN` | `inv_svc_…` token from InvenFlow's `/service-tokens` page (optional — can also be pasted via the sidecar's Settings UI after first deploy) |
+| `INITIAL_AI_PROVIDER` / `INITIAL_AI_MODEL` / `INITIAL_AI_API_KEY` | Optional — seeds the AI settings row |
+| `FONNTE_TOKEN` / `ADMIN_WA_NUMBER` | Optional — seeds notification config |
+
+### Migrations
+
+The web container's entrypoint (`apps/web/start-prod.sh`) runs `prisma migrate deploy` against `DATABASE_URL` before starting the Next.js server. This makes deploys self-applying — pushing a commit with new migrations to `main` triggers Coolify to rebuild and the new container applies the schema change on startup. A failed migration crashes the container so Coolify retries / surfaces the error rather than serving a stale schema.
+
+The Prisma CLI is installed globally in the Dockerfile's runner stage (pinned to `5.22.0`), and `apps/web/prisma/` (schema + migrations) is copied alongside the standalone bundle so the entrypoint can find them.
+
+### DNS
+
+Add an A record on the `ptunicorn.id` zone:
+
+```
+A    tracker    37.60.255.195    auto TTL
+```
+
+Cert issuance via Let's Encrypt's http-01 challenge fails until DNS propagates.
+
+### First-time deployment checklist
+
+1. DNS A record live (`dig +short tracker.ptunicorn.id` returns the VPS IP).
+2. In InvenFlow's `https://inventory.ptunicorn.id/service-tokens`: create a service token named `marketplace-tracker-production` with permissions `marketplace.ingest`, `marketplace.transition`, `upload`. Copy the `inv_svc_…` value (one-time visibility).
+3. Create managed Postgres + Redis in Coolify under the InvenFlow project.
+4. Create the Docker Compose application in Coolify pointing at this repo's `main` branch and `docker-compose.coolify.yml`.
+5. Set the env vars listed above. Paste the service token into `INVENFLOW_INITIAL_SERVICE_TOKEN`.
+6. Trigger the first deploy. The web container's entrypoint will apply migrations and seed the initial admin from `INITIAL_ADMIN_*` env vars.
+7. Verify `https://tracker.ptunicorn.id/api/health` returns `{ "status": "ok", … }`.
+8. Log in as the seeded admin, walk through Settings → Test Connection on each tab.
+
+### Backups
+
+In Coolify, enable scheduled backups on `tracker-postgres-production` (daily, 02:00 Asia/Jakarta). The browser-profile volume (`tracker_profiles`) is **not** backed up by default; if it is lost, re-login to each marketplace via the Open Browser flow.
+
+---
+
 ## Repository layout
 
 See PRD §6 for the canonical layout. Top-level:
@@ -132,4 +194,4 @@ invenflow-marketplace-tracker/
 
 ## Development status
 
-This repository is currently at **B1: skeleton + Docker stack only**. The web app serves a placeholder page and a stubbed `/api/health` endpoint; the worker just logs `worker starting` and idles. Real schemas, NextAuth handlers, scrapers, and integration logic land in subsequent workstreams (B2, B3, C1+).
+v1 feature-complete: Tokopedia + Shopee scrapers, ingest pipeline with InvenFlow contract, lifecycle transitions with §3.4 concurrency rule, interactive browser session via noVNC, run history, dashboard, cron scheduler, Fonnte notifications, daily digest. Open items tracked in [`/Users/yanuar/.claude/plans/splendid-tickling-crescent.md`](../../../.claude/plans/splendid-tickling-crescent.md) — primarily real-account validation (URL drift, DOM extraction tuning, login-redirect signals) which only surfaces against live Tokopedia/Shopee accounts.

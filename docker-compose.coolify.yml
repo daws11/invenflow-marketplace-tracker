@@ -1,0 +1,124 @@
+# =============================================================================
+# Production compose stack for Coolify deployment at tracker.ptunicorn.id.
+#
+# Differences from docker-compose.yml (local dev):
+#   - No `caddy`        — Coolify Traefik handles SSL + reverse proxy.
+#   - No `postgres`     — Coolify managed database (tracker-postgres-production).
+#   - No `redis`        — Coolify managed database (tracker-redis-production).
+#   - Per-service Traefik labels for routing.
+#
+# Coolify injects environment variables from the application's env-var config;
+# DATABASE_URL and REDIS_URL point at the internal hostnames of the managed
+# databases (e.g. tracker-postgres-production.coolify:5432).
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Next.js app — the only externally-routed service.
+  # ---------------------------------------------------------------------------
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+      - NEXTAUTH_URL=${NEXTAUTH_URL}
+      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - APP_URL=${APP_URL}
+      - INITIAL_ADMIN_EMAIL=${INITIAL_ADMIN_EMAIL}
+      - INITIAL_ADMIN_PASSWORD=${INITIAL_ADMIN_PASSWORD}
+      - INVENFLOW_BASE_URL=${INVENFLOW_BASE_URL:-}
+      - INVENFLOW_INITIAL_SERVICE_TOKEN=${INVENFLOW_INITIAL_SERVICE_TOKEN:-}
+      - INITIAL_AI_PROVIDER=${INITIAL_AI_PROVIDER:-}
+      - INITIAL_AI_MODEL=${INITIAL_AI_MODEL:-}
+      - INITIAL_AI_API_KEY=${INITIAL_AI_API_KEY:-}
+      - FONNTE_TOKEN=${FONNTE_TOKEN:-}
+      - ADMIN_WA_NUMBER=${ADMIN_WA_NUMBER:-}
+      - NODE_ENV=production
+    expose:
+      - "3000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:3000/api/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    labels:
+      - traefik.enable=true
+      # HTTPS router — main app
+      - traefik.http.routers.tracker-web.rule=Host(`tracker.ptunicorn.id`)
+      - traefik.http.routers.tracker-web.entrypoints=https
+      - traefik.http.routers.tracker-web.tls=true
+      - traefik.http.routers.tracker-web.tls.certresolver=letsencrypt
+      - traefik.http.routers.tracker-web.priority=1
+      - traefik.http.services.tracker-web.loadbalancer.server.port=3000
+      # HTTP -> HTTPS redirect
+      - traefik.http.routers.tracker-web-http.rule=Host(`tracker.ptunicorn.id`)
+      - traefik.http.routers.tracker-web-http.entrypoints=http
+      - traefik.http.routers.tracker-web-http.middlewares=tracker-redirect-to-https
+      - traefik.http.middlewares.tracker-redirect-to-https.redirectscheme.scheme=https
+      - traefik.http.middlewares.tracker-redirect-to-https.redirectscheme.permanent=true
+
+  # ---------------------------------------------------------------------------
+  # Browser worker — internal only. Mounts a persistent volume for marketplace
+  # browser profiles (cookies/localStorage so re-login isn't needed every run).
+  # ---------------------------------------------------------------------------
+  worker:
+    build:
+      context: .
+      dockerfile: apps/worker/Dockerfile
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - DISPLAY=:99
+      - NODE_ENV=production
+      - PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+    volumes:
+      - tracker_profiles:/data/profiles
+    # No Traefik labels — worker speaks only over the internal docker network.
+    # The web app reaches the worker queue via Redis; nothing reaches the
+    # worker's HTTP/VNC ports from outside the compose network.
+
+  # ---------------------------------------------------------------------------
+  # noVNC web client + websockify proxy. Coolify Traefik routes:
+  #   /novnc/*       → strip prefix, proxy to novnc:6080 (serves vnc.html etc.)
+  #   /websockify    → no strip, proxy to novnc:6080 (WebSocket upgrade)
+  # websockify, in turn, forwards the WebSocket to worker:5900 where x11vnc
+  # runs (one ephemeral instance per active browser session).
+  # ---------------------------------------------------------------------------
+  novnc:
+    build:
+      context: ./docker/novnc
+    restart: unless-stopped
+    expose:
+      - "6080"
+    depends_on:
+      - worker
+    labels:
+      - traefik.enable=true
+      # Static-asset router — strips /novnc so vnc.html and friends resolve.
+      - traefik.http.routers.tracker-novnc-static.rule=Host(`tracker.ptunicorn.id`) && PathPrefix(`/novnc`)
+      - traefik.http.routers.tracker-novnc-static.entrypoints=https
+      - traefik.http.routers.tracker-novnc-static.tls=true
+      - traefik.http.routers.tracker-novnc-static.tls.certresolver=letsencrypt
+      - traefik.http.routers.tracker-novnc-static.priority=10
+      - traefik.http.routers.tracker-novnc-static.middlewares=tracker-strip-novnc
+      - traefik.http.routers.tracker-novnc-static.service=tracker-novnc
+      - traefik.http.middlewares.tracker-strip-novnc.stripprefix.prefixes=/novnc
+      # WebSocket router — keeps the path so websockify routes correctly.
+      - traefik.http.routers.tracker-novnc-ws.rule=Host(`tracker.ptunicorn.id`) && PathPrefix(`/websockify`)
+      - traefik.http.routers.tracker-novnc-ws.entrypoints=https
+      - traefik.http.routers.tracker-novnc-ws.tls=true
+      - traefik.http.routers.tracker-novnc-ws.tls.certresolver=letsencrypt
+      - traefik.http.routers.tracker-novnc-ws.priority=10
+      - traefik.http.routers.tracker-novnc-ws.service=tracker-novnc
+      # Shared service definition — both routers point at the same backend.
+      - traefik.http.services.tracker-novnc.loadbalancer.server.port=6080
+
+volumes:
+  tracker_profiles:
