@@ -168,9 +168,16 @@ export async function buildStagehandConfig(): Promise<StagehandConfig> {
 // -----------------------------------------------------------------------------
 
 const TEST_PROMPT = 'Reply with just the word OK.';
-const TEST_TIMEOUT_MS = 10_000;
-const TEST_MAX_TOKENS = 16;
-const PREVIEW_LEN = 100;
+// Reasoning / "thinking" models (Kimi K2.5, DeepSeek-R1, OpenAI o-series, …)
+// burn most of their max_tokens on internal reasoning before emitting any
+// visible content. With a 16-token cap they tend to return an empty
+// `content` field, which made our test fail with "no message content"
+// even though the connection itself works fine. 512 is still cheap as a
+// one-off connection check (~$0.0003 on Kimi K2.5) and leaves headroom
+// for the model to think + reply "OK".
+const TEST_TIMEOUT_MS = 30_000;
+const TEST_MAX_TOKENS = 512;
+const PREVIEW_LEN = 200;
 
 /**
  * Sends the minimal validation prompt against the resolved configuration.
@@ -369,13 +376,41 @@ async function callOpenAi(
     );
   }
   const json = (await res.json()) as {
-    choices?: Array<{ message?: { content?: string } }>;
+    choices?: Array<{
+      finish_reason?: string;
+      message?: {
+        content?: string | null;
+        // Reasoning / thinking models surface their internal monologue in
+        // a separate field. OpenRouter normalizes most providers to either
+        // `reasoning` (top-level) or `reasoning_content` (nested) — accept
+        // both so the test passes even when `content` is empty due to
+        // max_tokens being spent on reasoning.
+        reasoning?: string | null;
+        reasoning_content?: string | null;
+      };
+    }>;
   };
-  const text = json.choices?.[0]?.message?.content;
-  if (typeof text !== 'string') {
+  const choice = json.choices?.[0];
+  const message = choice?.message;
+  const candidate =
+    (typeof message?.content === 'string' && message.content.length > 0
+      ? message.content
+      : null) ??
+    (typeof message?.reasoning === 'string' ? message.reasoning : null) ??
+    (typeof message?.reasoning_content === 'string'
+      ? message.reasoning_content
+      : null);
+  if (typeof candidate !== 'string' || candidate.length === 0) {
+    // Distinguish between truncation-due-to-thinking-cap vs no choices at all.
+    if (choice?.finish_reason === 'length') {
+      throw new Error(
+        'Response truncated by max_tokens before any visible output. ' +
+          'Try a non-reasoning model or increase max_tokens.',
+      );
+    }
     throw new Error('OpenAI-compatible API returned no message content');
   }
-  return text;
+  return candidate;
 }
 
 async function callGoogle(cfg: AiSettingsInput): Promise<string> {
