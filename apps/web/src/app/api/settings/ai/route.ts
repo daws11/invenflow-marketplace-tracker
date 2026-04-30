@@ -20,7 +20,13 @@ export const dynamic = 'force-dynamic';
 
 const AiPatchSchema = z
   .object({
-    provider: z.enum(['anthropic', 'openai', 'google', 'openai_compatible']),
+    provider: z.enum([
+      'anthropic',
+      'openai',
+      'google',
+      'openai_compatible',
+      'openrouter',
+    ]),
     model: z.string().min(1),
     apiKey: z.string().optional(),
     baseUrl: z

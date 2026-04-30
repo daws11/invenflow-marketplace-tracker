@@ -16,7 +16,14 @@ import {
   inputClass,
 } from '../_form-helpers';
 
-type Provider = 'anthropic' | 'openai' | 'google' | 'openai_compatible';
+type Provider =
+  | 'anthropic'
+  | 'openai'
+  | 'google'
+  | 'openai_compatible'
+  | 'openrouter';
+
+const OPENROUTER_DEFAULT_BASE_URL = 'https://openrouter.ai/api/v1';
 
 interface AiValues {
   provider: Provider;
@@ -156,22 +163,38 @@ export function AiTab() {
         <select
           id="provider"
           value={values.provider}
-          onChange={(e) =>
-            setValues((v) => ({ ...v, provider: e.target.value as Provider }))
-          }
+          onChange={(e) => {
+            const next = e.target.value as Provider;
+            setValues((v) => {
+              // When the operator switches TO OpenRouter and the baseUrl
+              // field is empty, pre-fill it with OR's canonical endpoint so
+              // they don't have to remember it. Don't overwrite a non-empty
+              // value (e.g. they pasted a self-hosted proxy).
+              const baseUrl =
+                next === 'openrouter' && !v.baseUrl
+                  ? OPENROUTER_DEFAULT_BASE_URL
+                  : v.baseUrl;
+              return { ...v, provider: next, baseUrl };
+            });
+          }}
           className={inputClass}
         >
           <option value="anthropic">Anthropic</option>
           <option value="openai">OpenAI</option>
           <option value="google">Google (Gemini)</option>
-          <option value="openai_compatible">OpenAI-compatible</option>
+          <option value="openrouter">OpenRouter</option>
+          <option value="openai_compatible">OpenAI-compatible (custom)</option>
         </select>
       </Field>
 
       <Field
         id="model"
         label="Model identifier"
-        hint="Free-text — paste the model ID exactly as the provider documents it."
+        hint={
+          values.provider === 'openrouter'
+            ? 'OpenRouter model ID, e.g. anthropic/claude-3.5-sonnet, openai/gpt-4o-mini.'
+            : 'Free-text — paste the model ID exactly as the provider documents it.'
+        }
       >
         <input
           id="model"
@@ -208,13 +231,26 @@ export function AiTab() {
         />
       </Field>
 
-      {values.provider === 'openai_compatible' ? (
-        <Field id="baseUrl" label="Base URL">
+      {values.provider === 'openai_compatible' ||
+      values.provider === 'openrouter' ? (
+        <Field
+          id="baseUrl"
+          label="Base URL"
+          hint={
+            values.provider === 'openrouter'
+              ? 'Defaults to https://openrouter.ai/api/v1. Override only if you proxy OpenRouter through your own gateway.'
+              : 'OpenAI-compatible endpoint (e.g. self-hosted Ollama, vLLM, LiteLLM, …).'
+          }
+        >
           <input
             id="baseUrl"
             type="url"
             value={values.baseUrl}
-            placeholder="https://api.example.com/v1"
+            placeholder={
+              values.provider === 'openrouter'
+                ? OPENROUTER_DEFAULT_BASE_URL
+                : 'https://api.example.com/v1'
+            }
             onChange={(e) =>
               setValues((v) => ({ ...v, baseUrl: e.target.value }))
             }

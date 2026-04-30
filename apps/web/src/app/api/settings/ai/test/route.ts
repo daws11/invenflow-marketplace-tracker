@@ -26,7 +26,13 @@ export const dynamic = 'force-dynamic';
 const TestSchema = z
   .object({
     provider: z
-      .enum(['anthropic', 'openai', 'google', 'openai_compatible'])
+      .enum([
+        'anthropic',
+        'openai',
+        'google',
+        'openai_compatible',
+        'openrouter',
+      ])
       .optional(),
     model: z.string().min(1).optional(),
     apiKey: z.string().min(1).optional(),

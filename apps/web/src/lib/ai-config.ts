@@ -29,7 +29,11 @@ export type AiProvider =
   | 'anthropic'
   | 'openai'
   | 'google'
-  | 'openai_compatible';
+  | 'openai_compatible'
+  | 'openrouter';
+
+/** Default base URL for OpenRouter — exposed so the UI can pre-fill it. */
+export const OPENROUTER_DEFAULT_BASE_URL = 'https://openrouter.ai/api/v1';
 
 export interface ActiveAiSettings {
   id: string;
@@ -89,6 +93,7 @@ const VALID_PROVIDERS: ReadonlySet<AiProvider> = new Set<AiProvider>([
   'openai',
   'google',
   'openai_compatible',
+  'openrouter',
 ]);
 
 function assertProvider(value: string): AiProvider {
@@ -141,7 +146,13 @@ export async function buildStagehandConfig(): Promise<StagehandConfig> {
   const modelClientOptions: StagehandConfig['modelClientOptions'] = {
     apiKey: s.apiKey,
   };
-  if (s.baseUrl) modelClientOptions.baseURL = s.baseUrl;
+  // Resolve base URL: explicit value wins, otherwise OpenRouter gets its
+  // canonical default (so operators don't have to remember to paste it).
+  if (s.baseUrl) {
+    modelClientOptions.baseURL = s.baseUrl;
+  } else if (s.provider === 'openrouter') {
+    modelClientOptions.baseURL = OPENROUTER_DEFAULT_BASE_URL;
+  }
 
   return {
     modelName: s.model,
@@ -235,6 +246,18 @@ async function dispatch(cfg: AiSettingsInput): Promise<string> {
     case 'openai':
     case 'openai_compatible':
       return callOpenAi(cfg);
+    case 'openrouter':
+      return callOpenAi({
+        ...cfg,
+        // OpenRouter accepts the OpenAI chat-completions shape verbatim.
+        // Force the canonical baseUrl when the operator left it blank, and
+        // forward the recommended attribution headers so OR can credit usage
+        // to this app (and unlock app-specific routing rules later).
+        baseUrl:
+          cfg.baseUrl && cfg.baseUrl.length > 0
+            ? cfg.baseUrl
+            : OPENROUTER_DEFAULT_BASE_URL,
+      }, OPENROUTER_HEADERS);
     case 'google':
       return callGoogle(cfg);
     default: {
@@ -244,6 +267,16 @@ async function dispatch(cfg: AiSettingsInput): Promise<string> {
     }
   }
 }
+
+/**
+ * OpenRouter "recommended" headers — they're optional but help with
+ * attribution + may unlock cheaper / better routing. We don't read APP_URL
+ * here to keep this module DB-free; the values below are static.
+ */
+const OPENROUTER_HEADERS: Record<string, string> = {
+  'HTTP-Referer': 'https://tracker.ptunicorn.id',
+  'X-Title': 'InvenFlow Marketplace Tracker',
+};
 
 async function fetchWithTimeout(
   url: string,
@@ -302,7 +335,10 @@ async function callAnthropic(cfg: AiSettingsInput): Promise<string> {
   return first.text;
 }
 
-async function callOpenAi(cfg: AiSettingsInput): Promise<string> {
+async function callOpenAi(
+  cfg: AiSettingsInput,
+  extraHeaders?: Record<string, string>,
+): Promise<string> {
   const base =
     (cfg.baseUrl && cfg.baseUrl.length > 0
       ? cfg.baseUrl
@@ -316,6 +352,7 @@ async function callOpenAi(cfg: AiSettingsInput): Promise<string> {
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${cfg.apiKey}`,
+        ...(extraHeaders ?? {}),
       },
       body: JSON.stringify({
         model: cfg.model,

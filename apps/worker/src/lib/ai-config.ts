@@ -20,7 +20,11 @@ export type AiProvider =
   | 'anthropic'
   | 'openai'
   | 'google'
-  | 'openai_compatible';
+  | 'openai_compatible'
+  | 'openrouter';
+
+/** Default base URL for OpenRouter — must match the web copy. */
+export const OPENROUTER_DEFAULT_BASE_URL = 'https://openrouter.ai/api/v1';
 
 export interface ActiveAiSettings {
   id: string;
@@ -49,6 +53,7 @@ const VALID_PROVIDERS: ReadonlySet<AiProvider> = new Set<AiProvider>([
   'openai',
   'google',
   'openai_compatible',
+  'openrouter',
 ]);
 
 function assertProvider(value: string): AiProvider {
@@ -95,7 +100,11 @@ export async function buildStagehandConfig(): Promise<StagehandConfig> {
   const modelClientOptions: StagehandConfig['modelClientOptions'] = {
     apiKey: s.apiKey,
   };
-  if (s.baseUrl) modelClientOptions.baseURL = s.baseUrl;
+  if (s.baseUrl) {
+    modelClientOptions.baseURL = s.baseUrl;
+  } else if (s.provider === 'openrouter') {
+    modelClientOptions.baseURL = OPENROUTER_DEFAULT_BASE_URL;
+  }
 
   return {
     modelName: s.model,
