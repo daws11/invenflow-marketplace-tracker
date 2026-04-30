@@ -22,6 +22,7 @@ import type {
   IngestOrderRequest,
   IngestOrderResponse,
   InvenflowErrorBody,
+  Kanban,
   KanbanColumnsResponse,
   KanbanListResponse,
   OperatorMovedResponse,
@@ -231,12 +232,20 @@ export class InvenflowClient {
   // ---------------------------------------------------------------------------
 
   async listKanbans(type: 'order' | 'receive'): Promise<KanbanListResponse> {
-    const res = await this.request<KanbanListResponse>({
+    // InvenFlow's actual response shape is a raw `Kanban[]`, not the
+    // `{ kanbans: Kanban[] }` envelope our types assumed. Normalize here so
+    // callers (account-form dropdown, audit logs, etc.) can rely on the
+    // envelope shape regardless of which side drifts later.
+    const res = await this.request<KanbanListResponse | Kanban[]>({
       method: 'GET',
       url: '/api/kanbans',
       params: { type },
     });
-    return res.data;
+    const body = res.data as KanbanListResponse | Kanban[];
+    if (Array.isArray(body)) {
+      return { kanbans: body };
+    }
+    return body;
   }
 
   // ---------------------------------------------------------------------------
