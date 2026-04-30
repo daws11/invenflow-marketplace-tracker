@@ -38,26 +38,19 @@ services:
       - FONNTE_TOKEN=${FONNTE_TOKEN:-}
       - ADMIN_WA_NUMBER=${ADMIN_WA_NUMBER:-}
       - NODE_ENV=production
-    # DEBUG MODE STEP 2: prior wrapper still crash-looped (7 restarts in 10s)
-    # which means the container's cgroup is being OOM-killed when Next.js
-    # tries to boot. To verify the container can stay alive at all, override
-    # CMD with literal `sleep infinity` (no shell, no app boot, ~1MB memory).
-    # If this stays running, the original crash is memory pressure when the
-    # node server boots — fix is to add memory limits + start the app
-    # explicitly only after we exec in.
+    # DEBUG MODE STEP 3: even sleep infinity + 512m crashed (7 restarts in 13s)
+    # which is impossible under normal docker semantics. Strip everything that
+    # could plausibly trigger a kill: drop mem_limit (in case docker rejected
+    # the cgroup config silently), run as root (in case nextjs user can't
+    # exec /usr/bin/sleep for some reason), and explicitly disable the
+    # image-baked HEALTHCHECK (which would otherwise mark unhealthy and
+    # Coolify might treat that as a restart trigger).
     command: ["sleep", "infinity"]
-    # Cap memory so docker won't oversubscribe the 4GB host (which is also
-    # running ~10 other Coolify apps + 4 postgres instances).
-    mem_limit: 512m
+    user: "0"
+    healthcheck:
+      disable: true
     expose:
       - "3000"
-    # Healthcheck disabled while debugging; re-enable once the app stays up.
-    # healthcheck:
-    #   test: ["CMD-SHELL", "curl -fsS http://localhost:3000/api/health || exit 1"]
-    #   interval: 30s
-    #   timeout: 5s
-    #   retries: 3
-    #   start_period: 60s
     labels:
       - traefik.enable=true
       # HTTPS router — main app
@@ -93,10 +86,10 @@ services:
     volumes:
       - tracker_profiles:/data/profiles
     # DEBUG: keep idle while we work out the web container.
-    # Playwright + Chromium can eat ~500MB-1GB; that's burning host memory
-    # we need elsewhere. Re-enable once web is healthy.
     command: ["sleep", "infinity"]
-    mem_limit: 256m
+    user: "0"
+    healthcheck:
+      disable: true
     # No Traefik labels — worker speaks only over the internal docker network.
     # The web app reaches the worker queue via Redis; nothing reaches the
     # worker's HTTP/VNC ports from outside the compose network.
