@@ -38,29 +38,17 @@ services:
       - FONNTE_TOKEN=${FONNTE_TOKEN:-}
       - ADMIN_WA_NUMBER=${ADMIN_WA_NUMBER:-}
       - NODE_ENV=production
-    # DEBUG MODE: wrap the entrypoint so we capture its exit code AND keep
-    # the container alive on any failure path. The image's CMD points at
-    # /app/start-prod.sh which itself traps failures, but the container
-    # has been crash-looping in production for reasons that don't show up
-    # in Coolify's log panel (it only streams logs while the container is
-    # in `running` state). This wrapper guarantees the shell stays in the
-    # foreground regardless of what start-prod.sh does.
-    command:
-      - /bin/sh
-      - -c
-      - |
-        set +e
-        echo "[wrapper] container started at $$(date -Iseconds)"
-        echo "[wrapper] whoami=$$(whoami) pwd=$$(pwd)"
-        echo "[wrapper] which prisma=$$(which prisma 2>&1 || echo NOTFOUND)"
-        echo "[wrapper] ls -la /app/start-prod.sh:"
-        ls -la /app/start-prod.sh 2>&1 || echo "[wrapper] /app/start-prod.sh not found"
-        echo "[wrapper] running /app/start-prod.sh ..."
-        /app/start-prod.sh
-        SCRIPT_EXIT=$$?
-        echo "[wrapper] /app/start-prod.sh returned $$SCRIPT_EXIT"
-        echo "[wrapper] keeping container alive — exec tail -f /dev/null"
-        exec tail -f /dev/null
+    # DEBUG MODE STEP 2: prior wrapper still crash-looped (7 restarts in 10s)
+    # which means the container's cgroup is being OOM-killed when Next.js
+    # tries to boot. To verify the container can stay alive at all, override
+    # CMD with literal `sleep infinity` (no shell, no app boot, ~1MB memory).
+    # If this stays running, the original crash is memory pressure when the
+    # node server boots — fix is to add memory limits + start the app
+    # explicitly only after we exec in.
+    command: ["sleep", "infinity"]
+    # Cap memory so docker won't oversubscribe the 4GB host (which is also
+    # running ~10 other Coolify apps + 4 postgres instances).
+    mem_limit: 512m
     expose:
       - "3000"
     # Healthcheck disabled while debugging; re-enable once the app stays up.
@@ -104,6 +92,11 @@ services:
       - PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
     volumes:
       - tracker_profiles:/data/profiles
+    # DEBUG: keep idle while we work out the web container.
+    # Playwright + Chromium can eat ~500MB-1GB; that's burning host memory
+    # we need elsewhere. Re-enable once web is healthy.
+    command: ["sleep", "infinity"]
+    mem_limit: 256m
     # No Traefik labels — worker speaks only over the internal docker network.
     # The web app reaches the worker queue via Redis; nothing reaches the
     # worker's HTTP/VNC ports from outside the compose network.
