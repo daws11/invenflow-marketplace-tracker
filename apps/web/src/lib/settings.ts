@@ -33,6 +33,14 @@ export const SETTING_KEYS = {
   notifyOnLoginRequired: 'notify.loginRequired',
   notifyOnSessionExpired: 'notify.sessionExpired',
   notifyOnDailyDigest: 'notify.dailyDigest',
+  // Outbound proxy used by the worker's Chromium launches. Lets the
+  // operator route browser sessions through an Indonesian residential /
+  // mobile proxy while keeping the VPS in Europe — Tokopedia / Shopee
+  // block non-ID datacenter IPs aggressively (PRD §13).
+  proxyEnabled: 'proxy.enabled',
+  proxyServer: 'proxy.server',
+  proxyUsername: 'proxy.username',
+  proxyPassword: 'proxy.password', // secret
 } as const;
 
 export type SettingKey = (typeof SETTING_KEYS)[keyof typeof SETTING_KEYS];
@@ -46,6 +54,7 @@ export type SettingKey = (typeof SETTING_KEYS)[keyof typeof SETTING_KEYS];
 const SECRET_KEYS: ReadonlySet<string> = new Set<string>([
   SETTING_KEYS.invenflowServiceToken,
   SETTING_KEYS.fonnteToken,
+  SETTING_KEYS.proxyPassword,
 ]);
 
 // -----------------------------------------------------------------------------

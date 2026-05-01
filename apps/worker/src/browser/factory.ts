@@ -30,7 +30,46 @@ import { Stagehand, type AvailableModel } from '@browserbasehq/stagehand';
 
 import { buildStagehandConfig } from '../lib/ai-config.js';
 import { childLogger } from '../lib/logger.js';
+import { SETTING_KEYS, getSettings } from '../lib/settings.js';
 import { ensureProfileDir, type Platform } from './profile-manager.js';
+
+interface ProxyConfig {
+  server: string;
+  username?: string;
+  password?: string;
+}
+
+/**
+ * Loads proxy config from the Setting table and shapes it for Playwright.
+ * Returns `null` when proxy is disabled or the server URL is missing.
+ *
+ * Indonesian residential / mobile proxies are the canonical fix for
+ * Tokopedia / Shopee blocking the VPS's EU datacenter IP — see the
+ * "Proxy" tab in Settings.
+ */
+async function loadProxyConfig(): Promise<ProxyConfig | null> {
+  const map = await getSettings([
+    SETTING_KEYS.proxyEnabled,
+    SETTING_KEYS.proxyServer,
+    SETTING_KEYS.proxyUsername,
+    SETTING_KEYS.proxyPassword,
+  ]);
+  const enabled = map.get(SETTING_KEYS.proxyEnabled);
+  const server = map.get(SETTING_KEYS.proxyServer);
+  if (!enabled || typeof server !== 'string' || server.length === 0) {
+    return null;
+  }
+  const username = map.get(SETTING_KEYS.proxyUsername);
+  const password = map.get(SETTING_KEYS.proxyPassword);
+  const cfg: ProxyConfig = { server };
+  if (typeof username === 'string' && username.length > 0) {
+    cfg.username = username;
+  }
+  if (typeof password === 'string' && password.length > 0) {
+    cfg.password = password;
+  }
+  return cfg;
+}
 
 const log = childLogger('browser:factory');
 
@@ -70,6 +109,7 @@ export async function createStagehand(
 
   const userDataDir = await ensureProfileDir(platform, accountId);
   const aiConfig = await buildStagehandConfig();
+  const proxy = await loadProxyConfig();
 
   log.info(
     {
@@ -79,6 +119,7 @@ export async function createStagehand(
       userDataDir,
       provider: aiConfig.provider,
       modelName: aiConfig.modelName,
+      proxy: proxy ? { server: proxy.server, hasAuth: Boolean(proxy.username) } : null,
     },
     'creating stagehand',
   );
@@ -116,6 +157,11 @@ export async function createStagehand(
       env: process.env.DISPLAY
         ? { DISPLAY: process.env.DISPLAY }
         : undefined,
+      // Forward proxy when configured. Playwright honors this via the
+      // `--proxy-server=<server>` chromium arg + an internal username/
+      // password injector — every request the headed Chromium makes
+      // (page loads, XHR, WebSocket) routes through the proxy.
+      ...(proxy ? { proxy } : {}),
     },
     // `interactive` currently informs only logging; once Stagehand
     // exposes a "wait for human" hook, route it here.

@@ -28,6 +28,10 @@ export const SETTING_KEYS = {
   notifyOnLoginRequired: 'notify.loginRequired',
   notifyOnSessionExpired: 'notify.sessionExpired',
   notifyOnDailyDigest: 'notify.dailyDigest',
+  proxyEnabled: 'proxy.enabled',
+  proxyServer: 'proxy.server',
+  proxyUsername: 'proxy.username',
+  proxyPassword: 'proxy.password', // secret
 } as const;
 
 export type SettingKey = (typeof SETTING_KEYS)[keyof typeof SETTING_KEYS];
@@ -35,6 +39,7 @@ export type SettingKey = (typeof SETTING_KEYS)[keyof typeof SETTING_KEYS];
 const SECRET_KEYS: ReadonlySet<string> = new Set<string>([
   SETTING_KEYS.invenflowServiceToken,
   SETTING_KEYS.fonnteToken,
+  SETTING_KEYS.proxyPassword,
 ]);
 
 // -----------------------------------------------------------------------------
