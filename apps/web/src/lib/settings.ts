@@ -41,6 +41,13 @@ export const SETTING_KEYS = {
   proxyServer: 'proxy.server',
   proxyUsername: 'proxy.username',
   proxyPassword: 'proxy.password', // secret
+  // Auth for the home-server Chrome scraper extension. `extension.apiKeyHash`
+  // is the SHA-256 hex of the bearer key the extension sends in the
+  // `x-extension-key` header (a hash, so it's not a secret in the encrypted
+  // sense); `extension.apiKeyPrefix` is the first 12 chars of the plaintext
+  // key, kept for display in the Settings UI.
+  extensionApiKeyHash: 'extension.apiKeyHash',
+  extensionApiKeyPrefix: 'extension.apiKeyPrefix',
 } as const;
 
 export type SettingKey = (typeof SETTING_KEYS)[keyof typeof SETTING_KEYS];

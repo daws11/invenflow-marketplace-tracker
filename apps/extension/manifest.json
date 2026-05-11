@@ -1,0 +1,48 @@
+{
+  "manifest_version": 3,
+  "name": "InvenFlow Tracker Scraper",
+  "version": "0.1.0",
+  "description": "Scrapes Tokopedia & Shopee buyer purchase lists in this browser and posts the orders to the InvenFlow tracker.",
+  "permissions": ["alarms", "storage", "tabs", "scripting"],
+  "host_permissions": [
+    "https://www.tokopedia.com/*",
+    "https://shopee.co.id/*",
+    "https://tracker.ptunicorn.id/*"
+  ],
+  "optional_host_permissions": ["https://*/*"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "options_page": "options.html",
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "InvenFlow Tracker Scraper"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.tokopedia.com/order-list*"],
+      "js": [
+        "content/parse-common.js",
+        "content/parse-tokopedia.js",
+        "content/bridge.js"
+      ],
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["https://shopee.co.id/user/purchase*"],
+      "js": [
+        "content/parse-common.js",
+        "content/parse-shopee.js",
+        "content/bridge.js"
+      ],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["content/inject-main.js"],
+      "matches": ["https://www.tokopedia.com/*", "https://shopee.co.id/*"]
+    }
+  ]
+}
