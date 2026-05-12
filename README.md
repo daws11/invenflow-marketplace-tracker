@@ -6,6 +6,25 @@ This repository is a **separate, standalone monorepo** — not a workspace membe
 
 See `PRD_MARKETPLACE_TRACKER_v2.md` (kept in the parent directory for now) for the full product spec.
 
+### Scraping path: Chrome extension (current) vs. server-side worker
+
+Tokopedia and Shopee anti-bot reliably blocks server-side browser automation
+(even from a residential Indonesian proxy). The supported way to scrape is the
+**Chrome extension in `apps/extension/`**: it runs in a real Chrome on an
+always-on machine, with a login session a human established, and POSTs orders to
+this app's authenticated `POST /api/ingest` (it reads per-account config from
+`GET /api/extension/accounts`; both use the `x-extension-key` header — generate
+the key in **Settings → Extension**). The app then forwards each order to
+InvenFlow exactly as the worker did.
+
+When scraping via the extension, **disable the server-side Playwright cron by
+setting every account's `cronEnabled = false`** in the Accounts UI — the worker's
+periodic resync then drops the `scheduled-paid-*` / `scheduled-shipped-*`
+repeatables (the `daily-digest` job stays). The `worker` / `novnc` containers
+keep running for the daily digest and the interactive (noVNC) login flow. The
+Stagehand/Playwright worker (`apps/worker/`) and its on-demand manual-run
+endpoints remain in the codebase as a fallback.
+
 ---
 
 ## Stack

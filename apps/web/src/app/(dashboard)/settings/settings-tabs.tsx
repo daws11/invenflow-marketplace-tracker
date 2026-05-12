@@ -8,6 +8,7 @@ import { useState } from 'react';
 
 import { AccountTab } from './tabs/account-tab';
 import { AiTab } from './tabs/ai-tab';
+import { ExtensionTab } from './tabs/extension-tab';
 import { GeneralTab } from './tabs/general-tab';
 import { InvenflowTab } from './tabs/invenflow-tab';
 import { NotificationsTab } from './tabs/notifications-tab';
@@ -17,6 +18,7 @@ type TabKey =
   | 'general'
   | 'ai'
   | 'invenflow'
+  | 'extension'
   | 'notifications'
   | 'proxy'
   | 'account';
@@ -25,6 +27,7 @@ const TABS: { key: TabKey; label: string }[] = [
   { key: 'general', label: 'General' },
   { key: 'ai', label: 'AI Model' },
   { key: 'invenflow', label: 'InvenFlow' },
+  { key: 'extension', label: 'Extension' },
   { key: 'notifications', label: 'Notifications' },
   { key: 'proxy', label: 'Proxy' },
   { key: 'account', label: 'Account' },
@@ -61,6 +64,7 @@ export function SettingsTabs() {
         {active === 'general' && <GeneralTab />}
         {active === 'ai' && <AiTab />}
         {active === 'invenflow' && <InvenflowTab />}
+        {active === 'extension' && <ExtensionTab />}
         {active === 'notifications' && <NotificationsTab />}
         {active === 'proxy' && <ProxyTab />}
         {active === 'account' && <AccountTab />}
