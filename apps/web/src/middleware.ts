@@ -10,6 +10,12 @@ const PUBLIC_PATH_PREFIXES = [
   '/login',
   '/api/auth', // NextAuth's own endpoints (signin, callback, csrf, …)
   '/api/health',
+  // Chrome scraper extension endpoints — these authenticate with the
+  // `x-extension-key` header (see lib/extension-auth.ts), not a NextAuth
+  // session. NOTE: `/api/settings/extension` (key generation) is NOT here on
+  // purpose — that one is session-gated like the rest of /api/settings.
+  '/api/extension', // GET /api/extension/accounts
+  '/api/ingest', // POST /api/ingest
 ];
 
 const PUBLIC_PATH_EXACT = new Set<string>([
