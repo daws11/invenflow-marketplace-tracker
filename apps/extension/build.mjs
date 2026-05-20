@@ -10,24 +10,15 @@ import { cpSync, mkdirSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { LOADABLE_ITEMS } from './manifest-files.mjs';
+
 const root = dirname(fileURLToPath(import.meta.url));
 const dist = join(root, 'dist');
 
 rmSync(dist, { recursive: true, force: true });
 mkdirSync(dist, { recursive: true });
 
-const ITEMS = [
-  'manifest.json',
-  'background.js',
-  'lib',
-  'content',
-  'options.html',
-  'options.js',
-  'popup.html',
-  'popup.js',
-];
-
-for (const item of ITEMS) {
+for (const item of LOADABLE_ITEMS) {
   cpSync(join(root, item), join(dist, item), { recursive: true });
 }
 

@@ -135,18 +135,46 @@ export function ExtensionTab() {
         </div>
       ) : null}
 
-      <button
-        type="button"
-        onClick={onGenerate}
-        disabled={generating}
-        className={buttonPrimaryClass}
-      >
-        {generating
-          ? 'Generating…'
-          : configured
-            ? 'Rotate key'
-            : 'Generate key'}
-      </button>
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={onGenerate}
+          disabled={generating}
+          className={buttonPrimaryClass}
+        >
+          {generating
+            ? 'Generating…'
+            : configured
+              ? 'Rotate key'
+              : 'Generate key'}
+        </button>
+        <a
+          href="/extension.zip"
+          download="invenflow-tracker-extension.zip"
+          className={buttonSecondaryClass}
+        >
+          Download extension (.zip)
+        </a>
+      </div>
+
+      <div className="rounded-md border border-neutral-200 bg-neutral-50 p-3 text-xs text-neutral-600">
+        <p className="font-medium text-neutral-700">Install on the home-server Chrome</p>
+        <ol className="mt-1 list-decimal space-y-0.5 pl-4">
+          <li>Unzip the download.</li>
+          <li>
+            Open <code>chrome://extensions</code> and enable{' '}
+            <span className="font-medium">Developer mode</span>.
+          </li>
+          <li>
+            Click <span className="font-medium">Load unpacked</span> and select the
+            unzipped folder.
+          </li>
+          <li>
+            On the extension&rsquo;s Options page, set this app&rsquo;s URL and paste the
+            key generated above.
+          </li>
+        </ol>
+      </div>
     </div>
   );
 }

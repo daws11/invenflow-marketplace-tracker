@@ -6,6 +6,7 @@
   "scripts": {
     "build": "node build.mjs",
     "dev": "node build.mjs",
+    "zip": "node build-zip.mjs",
     "lint": "node -e \"console.log('(no lint configured for the extension package)')\""
   }
 }
