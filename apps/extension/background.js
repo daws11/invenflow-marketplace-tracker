@@ -157,7 +157,11 @@ async function scrapeAccount(account, triggeredBy) {
   console.log('[if-scrape] open', account.platform, '|', account.name, '->', purchaseUrl);
   let tab;
   try {
-    tab = await chrome.tabs.create({ url: purchaseUrl, active: false });
+    // active:true (foreground) — Next.js SPAs (Tokopedia) defer data fetches when
+    // the tab is hidden (visibilityState !== 'visible'), so a background tab can
+    // load zero order responses. A visible tab is also the most human-like for
+    // anti-bot. Trade-off: it briefly steals focus per account.
+    tab = await chrome.tabs.create({ url: purchaseUrl, active: true });
   } catch (e) {
     await setAccountStatus(account.id, { state: 'error', lastError: 'Could not open tab: ' + ((e && e.message) || e) });
     return;
@@ -193,6 +197,7 @@ async function scrapeAccount(account, triggeredBy) {
   console.log('[if-scrape] result', account.name, {
     orders: Array.isArray(result.orders) ? result.orders.length : 0,
     rawCount: result.rawCount,
+    visibility: result.visibility,
     error: result.error || null,
   });
 

@@ -21,6 +21,12 @@
   },
   "content_scripts": [
     {
+      "matches": ["https://www.tokopedia.com/order-list*", "https://shopee.co.id/user/purchase*"],
+      "js": ["content/inject-main.js"],
+      "world": "MAIN",
+      "run_at": "document_start"
+    },
+    {
       "matches": ["https://www.tokopedia.com/order-list*"],
       "js": [
         "content/parse-common.js",

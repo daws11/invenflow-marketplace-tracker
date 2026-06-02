@@ -124,7 +124,7 @@
         return;
       }
 
-      send({ orders, error: parseError, rawCount: responses.length });
+      send({ orders, error: parseError, rawCount: responses.length, visibility: document.visibilityState });
     } catch (e) {
       send({ orders: [], error: 'bridge_crash: ' + String((e && e.message) || e) });
     }
