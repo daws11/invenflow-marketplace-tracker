@@ -13,10 +13,10 @@ COPY apps/web/package.json ./apps/web/
 COPY apps/worker/package.json ./apps/worker/
 COPY packages/shared/package.json ./packages/shared/
 
-# `--frozen-lockfile=false` because the lockfile is generated in B2; for now we
-# want install to succeed even without one. Once `pnpm-lock.yaml` is committed,
-# this can be tightened to `--frozen-lockfile`.
-RUN pnpm install --frozen-lockfile=false
+# Use the committed pnpm-lock.yaml. `--frozen-lockfile` pins the exact resolved
+# versions so a clean (--no-cache) build can't drift to newer deps that break
+# the build.
+RUN pnpm install --frozen-lockfile
 
 # -----------------------------------------------------------------------------
 # Stage 2: build the Next.js app in standalone mode

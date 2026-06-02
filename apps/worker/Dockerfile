@@ -9,9 +9,9 @@
 # inside the workspace — otherwise the Node-side code looks for a Chromium
 # build the image doesn't ship and Stagehand fails with:
 #   "Executable doesn't exist at /ms-playwright/chromium-1217/..."
-# We don't have a frozen lockfile yet (pnpm install --frozen-lockfile=false
-# in the deps stage), and Stagehand 1.14 peer-resolves @playwright/test@1.59.1,
-# so the actual installed Playwright is 1.59.1. Track that here.
+# The deps stage installs with --frozen-lockfile, so Playwright is pinned by
+# pnpm-lock.yaml: Stagehand 1.14 peer-resolves @playwright/test@1.59.1, so the
+# installed Playwright is 1.59.1. Keep this image tag in sync with that.
 FROM mcr.microsoft.com/playwright:v1.59.1-noble
 
 # Note: NODE_ENV is intentionally NOT set here. pnpm skips devDependencies
@@ -46,7 +46,7 @@ COPY apps/web/package.json ./apps/web/
 COPY apps/worker/package.json ./apps/worker/
 COPY packages/shared/package.json ./packages/shared/
 
-RUN pnpm install --frozen-lockfile=false
+RUN pnpm install --frozen-lockfile
 
 # Copy the rest of the workspace and build the worker.
 COPY . .
