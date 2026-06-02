@@ -71,14 +71,18 @@
         return p.then((res) => {
           try {
             if (res && (matches(reqUrl) || matches(res.url))) {
+              console.log('[if-inject] MATCH', String(res.url || reqUrl).slice(0, 70), 'type=' + res.type, 'status=' + res.status);
               res
                 .clone()
                 .text()
-                .then((t) => emit(res.url || reqUrl, t))
-                .catch(() => {});
+                .then((t) => {
+                  console.log('[if-inject] BODY', String(res.url || reqUrl).slice(0, 50), 'len=' + (t ? t.length : 0));
+                  emit(res.url || reqUrl, t);
+                })
+                .catch((e) => console.log('[if-inject] BODYERR', (e && e.message) || e));
             }
-          } catch {
-            /* ignore */
+          } catch (e) {
+            console.log('[if-inject] THENERR', (e && e.message) || e);
           }
           return res;
         });
