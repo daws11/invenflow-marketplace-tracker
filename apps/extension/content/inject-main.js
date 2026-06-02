@@ -59,6 +59,35 @@
     }
   }
 
+  // ---- Response body reader (primary capture) ----
+  // Piggyback on the PAGE's own read of the Response instead of clone()+read.
+  // Tokopedia fetches with an AbortController and aborts right after reading,
+  // which cancels a clone's still-pending read ("The user aborted a request").
+  // Wrapping Response.prototype.json/.text observes the value the page already
+  // read successfully — no clone, no abort. (Shopee still also works via the
+  // clone path + XHR below; duplicates are de-duped downstream by invoiceNumber.)
+  function captureRead(url, data) {
+    try {
+      emit(url, typeof data === 'string' ? data : JSON.stringify(data));
+    } catch (e) {
+      /* ignore */
+    }
+  }
+  ['json', 'text'].forEach((m) => {
+    const orig = Response.prototype[m];
+    if (typeof orig !== 'function') return;
+    Response.prototype[m] = function patchedBodyReader() {
+      const p = orig.apply(this, arguments);
+      try {
+        const u = this.url;
+        if (u && matches(u)) p.then((d) => captureRead(u, d)).catch(() => {});
+      } catch (e) {
+        /* ignore */
+      }
+      return p;
+    };
+  });
+
   // ---- fetch ----
   const origFetch = window.fetch;
   if (typeof origFetch === 'function') {
