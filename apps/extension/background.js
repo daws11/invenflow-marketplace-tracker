@@ -153,9 +153,11 @@ async function scrapeAccount(account, triggeredBy) {
     lastError: null,
   });
 
+  const purchaseUrl = purchaseUrlFor(account);
+  console.log('[if-scrape] open', account.platform, '|', account.name, '->', purchaseUrl);
   let tab;
   try {
-    tab = await chrome.tabs.create({ url: purchaseUrlFor(account), active: false });
+    tab = await chrome.tabs.create({ url: purchaseUrl, active: false });
   } catch (e) {
     await setAccountStatus(account.id, { state: 'error', lastError: 'Could not open tab: ' + ((e && e.message) || e) });
     return;
@@ -187,6 +189,12 @@ async function scrapeAccount(account, triggeredBy) {
   } catch {
     /* ignore */
   }
+
+  console.log('[if-scrape] result', account.name, {
+    orders: Array.isArray(result.orders) ? result.orders.length : 0,
+    rawCount: result.rawCount,
+    error: result.error || null,
+  });
 
   if (result.error === 'session_expired') {
     await setAccountStatus(account.id, {
@@ -223,6 +231,7 @@ async function scrapeAccount(account, triggeredBy) {
         orders,
       }),
     });
+    console.log('[if-scrape] ingest OK', account.name, resp);
     await setAccountStatus(account.id, {
       state: 'ok',
       lastFinishedAt: new Date().toISOString(),
@@ -234,6 +243,7 @@ async function scrapeAccount(account, triggeredBy) {
       parseRawCount: result.rawCount ?? null,
     });
   } catch (e) {
+    console.error('[if-scrape] ingest FAIL', account.name, 'status=', e && e.status, '|', (e && e.message) || e);
     await setAccountStatus(account.id, {
       state: 'error',
       lastFinishedAt: new Date().toISOString(),
@@ -250,6 +260,7 @@ async function runScrape(onlyAccountId, triggeredBy) {
   try {
     const accounts = await fetchAccounts();
     const targets = onlyAccountId ? accounts.filter((a) => a.id === onlyAccountId) : accounts;
+    console.log('[if-scrape] runScrape', { triggeredBy, targets: targets.map((a) => a.name) });
     for (let i = 0; i < targets.length; i++) {
       // eslint-disable-next-line no-await-in-loop
       await scrapeAccount(targets[i], triggeredBy);
@@ -286,7 +297,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'scrapeNow') {
     runScrape(msg.accountId || null, 'manual')
       .then(() => sendResponse({ ok: true }))
-      .catch((e) => sendResponse({ ok: false, error: String((e && e.message) || e) }));
+      .catch((e) => {
+        console.error('[if-scrape] scrapeNow FAILED (e.g. GET /api/extension/accounts rejected)', e && e.status, (e && e.message) || e);
+        sendResponse({ ok: false, error: String((e && e.message) || e) });
+      });
     return true; // keep the channel open for the async response
   }
 
