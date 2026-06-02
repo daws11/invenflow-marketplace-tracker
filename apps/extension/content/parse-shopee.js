@@ -1,151 +1,127 @@
-// Shopee buyer purchase-list parser.
+// Shopee buyer order-list parser.
 //
-// The /user/purchase page loads orders via (most likely)
-// shopee.co.id/api/v4/order/get_all_order_and_checkout_list, returning
-// data.order_data.details_list[] with shop-grouped items; prices are integers
-// scaled by 100000 (5 decimal places). The exact shape needs confirming with
-// DevTools on a logged-in account — this parser is defensive and falls back to
-// DOM scraping. Tighten the key names once real traffic is captured.
+// Shopee renders /user/purchase via REST JSON (NOT GraphQL):
+//   GET https://shopee.co.id/api/v4/order/get_order_list?list_type=<tab>&offset=<n>
+// (and get_checkout_list for unpaid carts). Shape confirmed against real
+// logged-in traffic (see __fixtures__/shopee-orderlist.json):
+//
+//   data.details_list[]
+//     .status.list_view_status_label.text   "label_completed" etc
+//     .shipping.tracking_info.ctime         epoch secs (delivery time — used as
+//                                           a best-effort order-date proxy)
+//     .info_card
+//       .order_id                           numeric — our invoiceNumber
+//       .final_total / .subtotal            money, scaled x100000 (micro-rupiah)
+//       .order_list_cards[]
+//         .shop_info.shop_name              seller
+//         .product_info.item_groups[].items[]
+//           .name, .model_name (variation), .amount (qty)
+//           .order_price / .item_price / .price_before_discount  (x100000)
+//           .shop_id, .item_id              -> product URL
+//
+// IMPORTANT: Shopee money fields are integers scaled by 100000. The order-list
+// payload has NO shipping/discount breakdown and NO order/payment date (only the
+// delivery ctime), so those need the order-detail endpoint.
 (() => {
   const NS = (globalThis.__ifScraper = globalThis.__ifScraper || {});
   NS.parsers = NS.parsers || {};
-  const { parseRupiah, toISODate, todayISO, toQty, pick, dedupeOrders } = NS;
+  const { toISODate, todayISO, toQty, dedupeOrders } = NS;
 
-  // Shopee monetary values are usually integers scaled by 100000.
-  function shopeePrice(v) {
-    if (v == null) return 0;
-    if (typeof v === 'string') return parseRupiah(v);
+  const SHOPEE_ORIGIN = 'https://shopee.co.id';
+  const PRICE_DIV = 100000; // Shopee prices are value * 100000.
+
+  function money(v) {
     const n = Number(v);
     if (!Number.isFinite(n)) return 0;
-    return n >= 100000 ? Math.round(n / 100000) : Math.max(0, Math.round(n));
-  }
-  function shopeePriceOrNull(v) {
-    if (v == null) return null;
-    return shopeePrice(v);
+    return Math.max(0, Math.round(n / PRICE_DIV));
   }
 
-  function mapShopOrder(so, parent) {
-    if (!so || typeof so !== 'object') return null;
+  function mapShopeeOrder(detail) {
+    const card = detail && detail.info_card;
+    if (!card || typeof card !== 'object') return null;
+
+    const cards = Array.isArray(card.order_list_cards) ? card.order_list_cards : [];
     const invoiceNumber = String(
-      pick(so, ['order_sn', 'order_id', 'orderid', 'order_number']) || pick(parent, ['order_sn', 'checkout_id']) || '',
+      card.order_sn || card.order_id || (cards[0] && (cards[0].order_sn || cards[0].order_id)) || '',
     ).trim();
     if (!invoiceNumber) return null;
-    const items = so.item_list || so.items || so.order_items || (so.info_card && so.info_card.item_list) || [];
-    const lineItems = (Array.isArray(items) ? items : [])
-      .map((it) => {
-        const qty = toQty(pick(it, ['amount', 'quantity', 'qty']) ?? 1);
-        const unitPrice = shopeePrice(pick(it, ['item_price', 'price', 'model_price', 'price_before_discount']) ?? 0);
-        let subtotal = shopeePrice(pick(it, ['order_price', 'total_price', 'item_total_price']) ?? 0);
-        if (!subtotal && unitPrice) subtotal = unitPrice * qty;
-        return {
-          marketplaceProductName: String(pick(it, ['name', 'item_name', 'product_name']) || 'Unknown product').trim(),
-          marketplaceProductUrl: it && it.shopid && it.itemid ? `https://shopee.co.id/product/${it.shopid}/${it.itemid}` : null,
-          quantity: qty,
-          unitPrice: unitPrice || 0,
-          subtotal: subtotal || (unitPrice || 0) * qty,
-        };
-      })
-      .filter((li) => li.marketplaceProductName);
+
+    const lineItems = [];
+    let sellerName = null;
+    for (const c of cards) {
+      if (!sellerName && c.shop_info && c.shop_info.shop_name) sellerName = c.shop_info.shop_name;
+      const groups = (c.product_info && c.product_info.item_groups) || [];
+      for (const g of groups) {
+        for (const it of g.items || []) {
+          const qty = toQty(it.amount ?? 1);
+          const unitPrice = money(it.order_price ?? it.item_price ?? it.price_before_discount ?? 0);
+          const url =
+            it.shop_id && it.item_id ? `${SHOPEE_ORIGIN}/product/${it.shop_id}/${it.item_id}` : null;
+          lineItems.push({
+            marketplaceProductName: String(it.name || 'Unknown product').trim(),
+            marketplaceProductUrl: url,
+            quantity: qty,
+            unitPrice: unitPrice || 0,
+            subtotal: (unitPrice || 0) * qty,
+          });
+        }
+      }
+    }
     if (lineItems.length === 0) return null;
+
+    // final_total is the amount actually paid (after vouchers/coins), so it can
+    // be LOWER than the sum of line subtotals; that gap is unitemised here.
     const totalAmount =
-      shopeePrice(pick(so, ['total_price', 'order_total', 'final_total', 'amount', 'pay_amount']) ?? 0) ||
-      lineItems.reduce((s, li) => s + li.subtotal, 0);
+      money(card.final_total ?? card.subtotal) || lineItems.reduce((s, li) => s + li.subtotal, 0);
+
+    const ctime =
+      detail.shipping && detail.shipping.tracking_info && detail.shipping.tracking_info.ctime;
+    const orderDate = toISODate(ctime) || todayISO();
+
     return {
       invoiceNumber,
-      orderDate:
-        toISODate(pick(so, ['create_time', 'ctime', 'pay_time', 'order_time', 'mtime'])) ||
-        toISODate(pick(parent, ['create_time', 'ctime'])) ||
-        todayISO(),
-      sellerName: pick(so, ['shop_name', 'shopname']) || pick(parent, ['shop_name', 'shopname']) || null,
+      orderDate,
+      sellerName: sellerName || null,
       lineItems,
-      shippingFee: shopeePriceOrNull(pick(so, ['shipping_fee', 'estimated_shipping_fee', 'actual_shipping_fee', 'shipping_fee_paid_by_buyer'])),
-      discount: shopeePriceOrNull(pick(so, ['voucher_discount', 'shop_voucher_discount', 'total_discount', 'coin_offset'])),
+      shippingFee: null, // not broken out in the order-list payload
+      discount: null, // voucher/coin gap is not itemised here
       totalAmount,
-      detailUrl: `https://shopee.co.id/user/purchase/order/${invoiceNumber}`,
+      detailUrl: `${SHOPEE_ORIGIN}/user/purchase/order/${invoiceNumber}`,
     };
   }
 
-  function collectShopeeOrder(entry, out) {
-    if (!entry || typeof entry !== 'object') return;
-    const shopOrders =
-      entry.shop_order_list ||
-      entry.shop_orders ||
-      (entry.info_card && entry.info_card.order_list) ||
-      (entry.order_data && entry.order_data.shop_order_list) ||
-      null;
-    if (Array.isArray(shopOrders) && shopOrders.length) {
-      for (const so of shopOrders) {
-        const o = mapShopOrder(so, entry);
-        if (o) out.push(o);
-      }
-      return;
-    }
-    const o = mapShopOrder(entry, entry);
-    if (o) out.push(o);
-  }
-
-  function fromApi(responses) {
-    const orders = [];
+  function fromRest(responses) {
+    const out = [];
     for (const { body } of responses) {
       if (!body || typeof body !== 'object') continue;
-      const buckets = [];
+      // The order data may sit directly under `data`, or nested in
+      // `data.order_data` (the get_all_order_and_checkout_list variant).
       const data = body.data || body;
-      const dl =
-        (data.order_data && (data.order_data.details_list || data.order_data.order_list)) ||
-        data.details_list ||
-        data.order_list ||
-        data.orders ||
-        null;
-      if (Array.isArray(dl)) buckets.push(...dl);
-      if (Array.isArray(body.details_list)) buckets.push(...body.details_list);
-      for (const entry of buckets) collectShopeeOrder(entry, orders);
+      const containers = [data, data.order_data].filter((x) => x && typeof x === 'object');
+      let list = null;
+      for (const cnt of containers) {
+        if (Array.isArray(cnt.details_list)) { list = cnt.details_list; break; }
+        if (Array.isArray(cnt.order_list)) { list = cnt.order_list; break; }
+      }
+      if (!list) continue;
+      for (const d of list) {
+        const o = mapShopeeOrder(d);
+        if (o) out.push(o);
+      }
     }
-    return dedupeOrders(orders);
+    return dedupeOrders(out);
   }
 
   function fromDom(doc) {
-    const orders = [];
-    const root = doc || document;
-    const cards = [...root.querySelectorAll('div, section, li')].filter((el) => {
-      const t = el.innerText || '';
-      return /(No\.?\s*Pesanan|Order ID)/i.test(t) && t.length < 4000 && el.querySelector('img');
-    });
-    const seen = new Set();
-    for (const card of cards) {
-      const t = card.innerText || '';
-      const inv = (t.match(/(?:No\.?\s*Pesanan|Order ID)\s*[:#]?\s*([A-Z0-9]+)/i) || [])[1];
-      if (!inv || seen.has(inv)) continue;
-      seen.add(inv);
-      const prices = (t.match(/Rp[\s.\d]+/g) || []).map(parseRupiah).filter(Boolean);
-      const totalAmount = prices.length ? Math.max(...prices) : 0;
-      const name = t.split('\n').find((l) => l.trim().length > 8 && !/Pesanan|Order ID|Rp/i.test(l)) || 'Unknown product';
-      orders.push({
-        invoiceNumber: inv,
-        orderDate:
-          toISODate((t.match(/\d{4}-\d{2}-\d{2}/) || [])[0]) ||
-          toISODate((t.match(/\d{1,2}\s+[A-Za-z]+\s+\d{4}/) || [])[0]) ||
-          todayISO(),
-        sellerName: null,
-        lineItems: [
-          {
-            marketplaceProductName: String(name).trim().slice(0, 200) || 'Unknown product',
-            marketplaceProductUrl: null,
-            quantity: 1,
-            unitPrice: totalAmount,
-            subtotal: totalAmount,
-          },
-        ],
-        shippingFee: null,
-        discount: null,
-        totalAmount,
-        detailUrl: null,
-      });
-    }
-    return orders;
+    // Shopee's purchase DOM is heavily virtualised and class-hashed, so a DOM
+    // scrape is unreliable. The REST path above is authoritative; return [] and
+    // let the bridge report a parse miss rather than emit garbage.
+    void doc;
+    return [];
   }
 
   NS.parsers.shopee = function shopeeParser({ responses, document: doc }) {
-    let orders = fromApi(responses || []);
+    let orders = fromRest(responses || []);
     if (orders.length === 0) orders = fromDom(doc || document);
     return orders;
   };

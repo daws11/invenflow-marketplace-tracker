@@ -1,15 +1,129 @@
 // Tokopedia buyer order-list parser.
 //
-// Tokopedia renders /order-list via GraphQL (gql.tokopedia.com). The exact
-// operation name and response shape need confirming with DevTools on a
-// logged-in account — so this parser is deliberately defensive: it walks any
-// captured GraphQL response looking for arrays of "order-like" objects, and
-// falls back to scraping the rendered order cards from the DOM. Treat the key
-// names below as best-guesses to be tightened once real traffic is captured.
+// Tokopedia renders /order-list via a GraphQL operation `GetOrderHistory`
+// (field `uohOrders`) on gql.tokopedia.com. The shape was confirmed against
+// real logged-in traffic (see __fixtures__/tokopedia-orderlist.json): the rich,
+// reliable data lives inside `metadata` as TWO JSON-encoded STRING fields —
+// `listProducts` (the line items) and `queryParams` (invoice, shop, etc.) — so
+// the primary path below parses those explicitly. A generic GraphQL walker and
+// a DOM scrape are kept as defensive fallbacks.
 (() => {
   const NS = (globalThis.__ifScraper = globalThis.__ifScraper || {});
   NS.parsers = NS.parsers || {};
   const { parseRupiah, parseRupiahOrNull, toISODate, todayISO, toQty, pick, dedupeOrders } = NS;
+
+  const TOKO_ORIGIN = 'https://www.tokopedia.com';
+
+  function parseJsonSafe(str) {
+    if (typeof str !== 'string' || str.trim() === '') return null;
+    try {
+      return JSON.parse(str);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function absoluteUrl(u) {
+    if (!u || typeof u !== 'string') return null;
+    if (/^https?:\/\//i.test(u)) return u;
+    return TOKO_ORIGIN + (u.charAt(0) === '/' ? u : '/' + u);
+  }
+
+  // ---- Primary path: the real `uohOrders` response shape -------------------
+
+  function mapUohOrder(order) {
+    const md = order && order.metadata;
+    if (!md || typeof md !== 'object') return null;
+
+    const qp = parseJsonSafe(md.queryParams) || {};
+    const list = parseJsonSafe(md.listProducts);
+    const products = Array.isArray(md.products) ? md.products : [];
+
+    const invoiceNumber = String(qp.invoice || order.verticalID || qp.order_id || '').trim();
+    if (!invoiceNumber) return null;
+
+    let lineItems = [];
+    if (Array.isArray(list) && list.length) {
+      lineItems = list
+        .map((it, idx) => {
+          const qty = toQty(it.quantity ?? it.qty ?? 1);
+          const unitPrice = parseRupiah(it.product_price ?? it.price ?? it.original_price ?? 0);
+          const fallbackTitle = (products[idx] && products[idx].title) || '';
+          return {
+            marketplaceProductName: String(it.product_name || fallbackTitle || 'Unknown product').trim(),
+            marketplaceProductUrl: null, // list response has no canonical product URL (no slug)
+            quantity: qty,
+            unitPrice: unitPrice || 0,
+            subtotal: (unitPrice || 0) * qty,
+          };
+        })
+        .filter((li) => li.marketplaceProductName);
+    }
+
+    // Fallback: no parseable listProducts -> use the display-only products[]
+    // (titles + a "N barang" qty label), with prices we cannot know set to 0.
+    if (lineItems.length === 0 && products.length) {
+      lineItems = products
+        .map((pr) => {
+          const qtyLabel = (pr.inline1 && pr.inline1.label) || '';
+          const qtyMatch = String(qtyLabel).match(/(\d+)/);
+          return {
+            marketplaceProductName: String(pr.title || 'Unknown product').trim(),
+            marketplaceProductUrl: null,
+            quantity: toQty(qtyMatch ? qtyMatch[1] : 1),
+            unitPrice: 0,
+            subtotal: 0,
+          };
+        })
+        .filter((li) => li.marketplaceProductName);
+    }
+
+    if (lineItems.length === 0) return null;
+
+    const totalAmount =
+      parseRupiah(md.totalPrice && md.totalPrice.value) ||
+      lineItems.reduce((s, li) => s + li.subtotal, 0);
+
+    const detailUrl =
+      (md.detailURL && absoluteUrl(md.detailURL.webURL)) || qp.invoice_url || null;
+
+    return {
+      invoiceNumber,
+      orderDate:
+        toISODate(md.paymentDateStr) ||
+        toISODate(md.paymentDate) ||
+        toISODate(order.createTime) ||
+        todayISO(),
+      sellerName: qp.shop_name || null,
+      lineItems,
+      // The order-list response does NOT break out shipping/discount; the only
+      // money figure is the grand total. Leave these null (a detail-page fetch
+      // would be needed to populate them).
+      shippingFee: null,
+      discount: null,
+      totalAmount,
+      detailUrl,
+    };
+  }
+
+  function fromUohOrders(responses) {
+    const out = [];
+    for (const { body } of responses) {
+      const envelopes = Array.isArray(body) ? body : [body];
+      for (const env of envelopes) {
+        const uoh = env && env.data && env.data.uohOrders;
+        const orders = uoh && Array.isArray(uoh.orders) ? uoh.orders : null;
+        if (!orders) continue;
+        for (const o of orders) {
+          const mapped = mapUohOrder(o);
+          if (mapped) out.push(mapped);
+        }
+      }
+    }
+    return dedupeOrders(out);
+  }
+
+  // ---- Fallback A: generic GraphQL walker (pre-uohOrders best-guess) --------
 
   function looksLikeOrder(el) {
     if (!el || typeof el !== 'object') return false;
@@ -20,7 +134,7 @@
     return hasInvoice && Array.isArray(products) && products.length > 0;
   }
 
-  function mapOrder(el) {
+  function mapGenericOrder(el) {
     const invoiceNumber = String(pick(el, ['invoice', 'invoiceRefNum', 'invoice_ref_num', 'orderId', 'order_id']) || '').trim();
     if (!invoiceNumber) return null;
     const products = el.products || el.orderProducts || el.order_products || el.items || el.detail || [];
@@ -63,7 +177,7 @@
     if (Array.isArray(node)) {
       for (const el of node) {
         if (looksLikeOrder(el)) {
-          const o = mapOrder(el);
+          const o = mapGenericOrder(el);
           if (o) out.push(o);
         } else {
           collectOrders(el, out, d + 1);
@@ -74,7 +188,7 @@
     for (const k of Object.keys(node)) collectOrders(node[k], out, d + 1);
   }
 
-  function fromGraphql(responses) {
+  function fromGraphqlGeneric(responses) {
     const orders = [];
     for (const { body } of responses) {
       const envelopes = Array.isArray(body) ? body : [body];
@@ -86,16 +200,18 @@
     return dedupeOrders(orders);
   }
 
+  // ---- Fallback B: DOM scrape ----------------------------------------------
+
   function fromDom(doc) {
     // DOM fallback — Tokopedia's order-list markup changes often, so this is a
     // coarse "one line item per order" approximation. Prefer the GraphQL path.
     const orders = [];
     const root = doc || document;
     const text = (root.body && root.body.innerText) || '';
-    if (!/INV\/\d/.test(text)) return orders;
+    if (!/INV\/\w/.test(text)) return orders;
     const cards = [...root.querySelectorAll('[data-testid], article, section, li, div')].filter((el) => {
       const t = el.innerText || '';
-      return /INV\/\d/.test(t) && t.length < 4000 && el.querySelector('img');
+      return /INV\/\w/.test(t) && t.length < 4000 && el.querySelector('img');
     });
     const seen = new Set();
     for (const card of cards) {
@@ -133,7 +249,9 @@
   }
 
   NS.parsers.tokopedia = function tokopediaParser({ responses, document: doc }) {
-    let orders = fromGraphql(responses || []);
+    const resp = responses || [];
+    let orders = fromUohOrders(resp);
+    if (orders.length === 0) orders = fromGraphqlGeneric(resp);
     if (orders.length === 0) orders = fromDom(doc || document);
     return orders;
   };

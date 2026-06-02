@@ -113,6 +113,37 @@ function jitter(base, spread) {
   return base + Math.floor(Math.random() * spread);
 }
 
+// Per-platform fallback purchase-list URLs (mirror the server defaults in
+// apps/web/src/app/api/extension/accounts/route.ts).
+const PURCHASE_URL_DEFAULTS = {
+  tokopedia: 'https://www.tokopedia.com/order-list',
+  shopee: 'https://shopee.co.id/user/purchase?type=2',
+};
+
+// Resolve the URL to open for an account, defensively.
+// - Tokopedia ignores a `?status=` query (filtering is the GraphQL `Status`
+//   variable / on-page tabs, not the URL). An old default — or a stale
+//   `paidUrlOverride` — may still carry `?status=dibayar`, which is harmless but
+//   pointless; strip it so capture is deterministic.
+// - Shopee's `?type=` DOES select the tab, so it is preserved as-is.
+// - Falls back to the platform default if the server sent nothing usable.
+function purchaseUrlFor(account) {
+  const platform = String(account && account.platform || '').toLowerCase();
+  const fallback = PURCHASE_URL_DEFAULTS[platform] || PURCHASE_URL_DEFAULTS.tokopedia;
+  const raw = String((account && account.paidUrl) || '').trim();
+  if (!raw) return fallback;
+  let u;
+  try {
+    u = new URL(raw);
+  } catch {
+    return fallback;
+  }
+  if (platform === 'tokopedia' && /\/order-list/.test(u.pathname)) {
+    u.searchParams.delete('status');
+  }
+  return u.toString().replace(/\?$/, '');
+}
+
 async function scrapeAccount(account, triggeredBy) {
   await setAccountStatus(account.id, {
     name: account.name,
@@ -124,7 +155,7 @@ async function scrapeAccount(account, triggeredBy) {
 
   let tab;
   try {
-    tab = await chrome.tabs.create({ url: account.paidUrl, active: false });
+    tab = await chrome.tabs.create({ url: purchaseUrlFor(account), active: false });
   } catch (e) {
     await setAccountStatus(account.id, { state: 'error', lastError: 'Could not open tab: ' + ((e && e.message) || e) });
     return;

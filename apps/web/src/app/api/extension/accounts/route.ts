@@ -18,10 +18,16 @@ export const dynamic = 'force-dynamic';
 // Default buyer purchase-list URLs per platform — kept in sync with the worker
 // agents (apps/worker/src/agents/{tokopedia,shopee}.ts). An account may
 // override either via `paidUrlOverride` / `shippedUrlOverride`.
+// NOTE: Tokopedia IGNORES a `?status=` query on /order-list — the status filter
+// is a GraphQL `Status` variable (set by the on-page tabs), not the URL. The old
+// `?status=dibayar`/`?status=dikirim` defaults just loaded the full list, so we
+// use the plain `/order-list` (Status="" = all; the extension dedupes by
+// idempotency key). Shopee, by contrast, DOES honour `?type=` to pick the tab
+// (type=2 ≈ "Sedang Dikemas"/just-paid, type=3 ≈ "Dikirim").
 const DEFAULT_URLS = {
   TOKOPEDIA: {
-    paid: 'https://www.tokopedia.com/order-list?status=dibayar',
-    shipped: 'https://www.tokopedia.com/order-list?status=dikirim',
+    paid: 'https://www.tokopedia.com/order-list',
+    shipped: 'https://www.tokopedia.com/order-list',
   },
   SHOPEE: {
     paid: 'https://shopee.co.id/user/purchase?type=2',
