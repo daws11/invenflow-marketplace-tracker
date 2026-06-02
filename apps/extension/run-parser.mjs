@@ -8,7 +8,7 @@
 // It loads parse-common.js + parse-<platform>.js (browser IIFEs that attach to
 // globalThis.__ifScraper), then calls the registered parser with the SAME
 // { responses, document } shape bridge.js feeds it. Fixtures are arrays of
-// { url, body } captured from real logged-in traffic (see __fixtures__/).
+// { url, body } captured from real logged-in traffic (see fixtures/).
 // Finally it validates each parsed order against the POST /api/ingest contract.
 
 import { readFileSync } from 'node:fs';
@@ -17,7 +17,7 @@ import { dirname, resolve } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const platform = process.argv[2] || 'tokopedia';
-const fixturePath = process.argv[3] || resolve(here, `__fixtures__/${platform}-orderlist.json`);
+const fixturePath = process.argv[3] || resolve(here, `fixtures/${platform}-orderlist.json`);
 
 // Minimal DOM stub so the parser's DOM-fallback path degrades to [] instead of
 // throwing — this harness only exercises the GraphQL path from a fixture.

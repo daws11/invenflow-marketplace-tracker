@@ -2,7 +2,7 @@
 //
 // Tokopedia renders /order-list via a GraphQL operation `GetOrderHistory`
 // (field `uohOrders`) on gql.tokopedia.com. The shape was confirmed against
-// real logged-in traffic (see __fixtures__/tokopedia-orderlist.json): the rich,
+// real logged-in traffic (see fixtures/tokopedia-orderlist.json): the rich,
 // reliable data lives inside `metadata` as TWO JSON-encoded STRING fields —
 // `listProducts` (the line items) and `queryParams` (invoice, shop, etc.) — so
 // the primary path below parses those explicitly. A generic GraphQL walker and

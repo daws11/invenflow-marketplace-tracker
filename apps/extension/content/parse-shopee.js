@@ -3,7 +3,7 @@
 // Shopee renders /user/purchase via REST JSON (NOT GraphQL):
 //   GET https://shopee.co.id/api/v4/order/get_order_list?list_type=<tab>&offset=<n>
 // (and get_checkout_list for unpaid carts). Shape confirmed against real
-// logged-in traffic (see __fixtures__/shopee-orderlist.json):
+// logged-in traffic (see fixtures/shopee-orderlist.json):
 //
 //   data.details_list[]
 //     .status.list_view_status_label.text   "label_completed" etc
