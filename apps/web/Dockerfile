@@ -7,10 +7,12 @@ FROM node:20-slim AS deps
 WORKDIR /repo
 RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
 
-# Bring in the workspace manifests so pnpm can resolve the dep graph.
-COPY package.json pnpm-workspace.yaml tsconfig.json ./
+# Bring in the workspace manifests + lockfile so --frozen-lockfile can verify
+# all 5 workspace projects (root, web, worker, extension, shared).
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml tsconfig.json ./
 COPY apps/web/package.json ./apps/web/
 COPY apps/worker/package.json ./apps/worker/
+COPY apps/extension/package.json ./apps/extension/
 COPY packages/shared/package.json ./packages/shared/
 
 # Use the committed pnpm-lock.yaml. `--frozen-lockfile` pins the exact resolved

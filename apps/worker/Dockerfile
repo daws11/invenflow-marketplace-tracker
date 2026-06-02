@@ -40,10 +40,12 @@ RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
 
 WORKDIR /repo
 
-# Bring in the workspace manifests first so the dep install layer caches well.
-COPY package.json pnpm-workspace.yaml tsconfig.json ./
+# Bring in the workspace manifests + lockfile first so the dep install layer
+# caches well and --frozen-lockfile can verify all 5 workspace projects.
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml tsconfig.json ./
 COPY apps/web/package.json ./apps/web/
 COPY apps/worker/package.json ./apps/worker/
+COPY apps/extension/package.json ./apps/extension/
 COPY packages/shared/package.json ./packages/shared/
 
 RUN pnpm install --frozen-lockfile
