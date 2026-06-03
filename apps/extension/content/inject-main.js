@@ -1,43 +1,35 @@
-// Runs in the PAGE's JS context (the "MAIN" world). Monkey-patches `fetch` and
-// `XMLHttpRequest` so we can *observe* the page's own API responses — we never
-// craft requests ourselves, which keeps the anti-bot surface identical to a
-// human. Matching responses are forwarded to the content-script bridge via
-// `window.postMessage`; the bridge does the parsing.
+// Runs in the PAGE's JS context (the "MAIN" world; injected via a world:MAIN
+// content_scripts entry at document_start so the patch is in place before the
+// page's own scripts run). Observes the page's own API responses — it crafts NO
+// requests, so the anti-bot surface stays identical to a human. Capture paths:
+//   1. Wrap Response.prototype.json/.text to read the body the page itself reads.
+//      This is immune to the page aborting its fetch after reading (Tokopedia
+//      uses AbortController, which cancels a clone()'s still-pending read with
+//      "The user aborted a request").
+//   2. A clone()-based fetch read, as a silent fallback for bodies the page
+//      reads via some other method.
+//   3. XMLHttpRequest, for XHR-based responses (e.g. Shopee).
+// Matching responses are forwarded to the content-script bridge via
+// window.postMessage; the bridge parses them.
 (() => {
   if (window.__ifInterceptorInstalled) return;
   window.__ifInterceptorInstalled = true;
 
   const SOURCE = 'invenflow-ext';
 
-  // --- TEMP DIAGNOSTICS (logs to the PAGE/tab console; remove once confirmed) ---
-  let __nFetch = 0;
-  let __nXhr = 0;
-  console.log('[if-inject] up', location.pathname, '| vis', document.visibilityState);
-  function __ifLog(kind, url) {
-    try {
-      const s = String(url);
-      if (/graphql|gql\.|uoh|get_order|order_list|\/order/i.test(s)) console.log('[if-inject]', kind, s.slice(0, 120));
-    } catch (e) {
-      /* ignore */
-    }
-  }
-  setInterval(() => console.log('[if-inject] seen fetch=' + __nFetch + ' xhr=' + __nXhr), 3000);
-
-  // URL substrings we care about — deliberately broad; the bridge filters
+  // URL substrings we care about — deliberately broad; the bridge/parsers filter
   // further. Covers Tokopedia order-history GraphQL and Shopee order-list v4.
-  // Refine after inspecting real traffic with DevTools.
   const PATTERNS = [
     '/graphql', // Tokopedia (gql.tokopedia.com)
     'get_all_order_and_checkout_list', // Shopee buyer order list
-    'get_order_list', // Shopee (older variants)
+    'get_order_list', // Shopee
     'get_order_detail', // Shopee order detail
     'order_list', // generic fallback
   ];
 
   function matches(url) {
     try {
-      const u = String(url);
-      return PATTERNS.some((p) => u.indexOf(p) !== -1);
+      return PATTERNS.some((p) => String(url).indexOf(p) !== -1);
     } catch {
       return false;
     }
@@ -52,24 +44,17 @@
       return; // not JSON — ignore
     }
     try {
-      console.log('[if-inject] EMIT', String(url).slice(0, 90));
       window.postMessage({ source: SOURCE, url: String(url), body }, location.origin);
     } catch {
       /* ignore */
     }
   }
 
-  // ---- Response body reader (primary capture) ----
-  // Piggyback on the PAGE's own read of the Response instead of clone()+read.
-  // Tokopedia fetches with an AbortController and aborts right after reading,
-  // which cancels a clone's still-pending read ("The user aborted a request").
-  // Wrapping Response.prototype.json/.text observes the value the page already
-  // read successfully — no clone, no abort. (Shopee still also works via the
-  // clone path + XHR below; duplicates are de-duped downstream by invoiceNumber.)
+  // ---- Primary capture: piggyback on the page's own body read ----
   function captureRead(url, data) {
     try {
       emit(url, typeof data === 'string' ? data : JSON.stringify(data));
-    } catch (e) {
+    } catch {
       /* ignore */
     }
   }
@@ -81,37 +66,31 @@
       try {
         const u = this.url;
         if (u && matches(u)) p.then((d) => captureRead(u, d)).catch(() => {});
-      } catch (e) {
+      } catch {
         /* ignore */
       }
       return p;
     };
   });
 
-  // ---- fetch ----
+  // ---- fetch: passthrough + silent clone() fallback ----
   const origFetch = window.fetch;
   if (typeof origFetch === 'function') {
     window.fetch = function patchedFetch(...args) {
       const reqUrl = args[0] && typeof args[0] === 'object' && 'url' in args[0] ? args[0].url : args[0];
-      __nFetch++;
-      __ifLog('fetch', reqUrl);
       const p = origFetch.apply(this, args);
       try {
         return p.then((res) => {
           try {
             if (res && (matches(reqUrl) || matches(res.url))) {
-              console.log('[if-inject] MATCH', String(res.url || reqUrl).slice(0, 70), 'type=' + res.type, 'status=' + res.status);
               res
                 .clone()
                 .text()
-                .then((t) => {
-                  console.log('[if-inject] BODY', String(res.url || reqUrl).slice(0, 50), 'len=' + (t ? t.length : 0));
-                  emit(res.url || reqUrl, t);
-                })
-                .catch((e) => console.log('[if-inject] BODYERR', (e && e.message) || e));
+                .then((t) => emit(res.url || reqUrl, t))
+                .catch(() => {});
             }
-          } catch (e) {
-            console.log('[if-inject] THENERR', (e && e.message) || e);
+          } catch {
+            /* ignore */
           }
           return res;
         });
@@ -139,8 +118,6 @@
         this.addEventListener('loadend', () => {
           try {
             const url = this.__ifUrl || this.responseURL;
-            __nXhr++;
-            __ifLog('xhr', url);
             if (!matches(url)) return;
             let text = null;
             if (this.responseType === '' || this.responseType === 'text') {
